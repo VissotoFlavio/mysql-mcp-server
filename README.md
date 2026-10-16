@@ -49,10 +49,11 @@ The resulting `mysql.pool` is intended for a later, tightly controlled query lay
 
 ## Validation
 
-Run unit tests without any database or credentials:
+Run formatting checks, lint, and unit tests without any database or credentials:
 
 ```bash
-npm run check
+npm run format:check
+npm run lint
 npm test
 ```
 
