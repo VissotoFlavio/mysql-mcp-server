@@ -14,10 +14,12 @@
     "lint:fix": "prettier --write --ignore-path .gitignore . && eslint src test --fix",
     "format": "prettier --write --ignore-path .gitignore .",
     "format:check": "prettier --check --ignore-path .gitignore .",
+    "start": "node dist/server.js",
     "test": "tsx --test \"test/unit/**/*.test.ts\"",
     "test:integration": "node -e \"if (process.env.MYSQL_INTEGRATION_TEST !== 'true') throw new Error('Set MYSQL_INTEGRATION_TEST=true to run integration tests.');\" && tsx --test test/integration"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
     "mysql2": "^3.14.0"
   },
   "devDependencies": {

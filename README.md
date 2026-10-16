@@ -1,8 +1,8 @@
 # MySQL MCP Server
 
-This repository provides the direct MySQL connection layer for a future MCP server. It follows the first milestone layout: configuration lives in `src/config.ts`, database pooling in `src/db/pool.ts`, and future MCP/metadata/tool code remains outside this issue's scope.
+This repository provides the direct MySQL connection layer and local stdio bootstrap for an MCP server. Configuration lives in `src/config.ts`, database pooling in `src/db/pool.ts`, and the MCP entry point is `src/server.ts`. Metadata discovery and query tools remain outside this issue's scope.
 
-The layer creates one bounded pool and deliberately does not expose MCP tools, metadata discovery, query execution, or HTTP hosting.
+The bootstrap creates one bounded pool and deliberately exposes no MCP tools, metadata discovery, query execution, or HTTP hosting.
 
 ## Runtime configuration
 
@@ -31,13 +31,16 @@ The layer reads optional TLS files only after TLS has been explicitly enabled. P
 
 ## Use
 
-Install declared dependencies in your own environment, then build the source:
+Install declared dependencies, build the source, then start the local MCP stdio server:
 
 ```bash
 npm run build
+npm start
 ```
 
-Create the layer once during process startup:
+The server validates runtime configuration and composes the MySQL connection layer at process startup. It communicates exclusively over standard input/output and does not open an HTTP listener.
+
+To compose the layer in another local entry point:
 
 ```js
 import { createConnectionLayer } from './dist/db/pool.js';
