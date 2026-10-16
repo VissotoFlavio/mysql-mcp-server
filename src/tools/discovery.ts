@@ -1,44 +1,7 @@
 import type { McpServer, StandardSchemaWithJSON } from '@modelcontextprotocol/server';
-import type { RowDataPacket } from 'mysql2';
 
+import { MAX_METADATA_RESULTS, listAccessibleSchemas, listAccessibleTables, type SchemaMetadata, type TableMetadata } from '../db/metadata.js';
 import type { ConnectionLayer } from '../db/pool.js';
-
-const MAX_METADATA_RESULTS = 100;
-
-const LIST_SCHEMAS_SQL = `
-  SELECT SCHEMA_NAME AS schemaName
-  FROM information_schema.SCHEMATA
-  ORDER BY SCHEMA_NAME ASC
-  LIMIT ?
-`;
-
-const LIST_TABLES_SQL = `
-  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
-  FROM information_schema.TABLES
-  WHERE TABLE_SCHEMA = ?
-  ORDER BY TABLE_SCHEMA ASC, TABLE_NAME ASC
-  LIMIT ?
-`;
-
-interface SchemaRow extends RowDataPacket {
-  readonly schemaName: string;
-}
-
-interface TableRow extends RowDataPacket {
-  readonly schemaName: string;
-  readonly tableName: string;
-  readonly tableType: string;
-}
-
-export interface SchemaMetadata {
-  readonly schemaName: string;
-}
-
-export interface TableMetadata {
-  readonly schemaName: string;
-  readonly tableName: string;
-  readonly tableType: string;
-}
 
 type TablesInput = Readonly<{ schema: string }>;
 type SchemaResult = Readonly<{ metadata: readonly SchemaMetadata[] }>;
@@ -191,10 +154,6 @@ function tablesOutputJsonSchema(): Record<string, unknown> {
   };
 }
 
-function queryOptions(mysql: ConnectionLayer, sql: string): Readonly<{ sql: string; timeout: number }> {
-  return Object.freeze({ ...mysql.queryOptions(), sql });
-}
-
 function errorResult(message: string) {
   return {
     content: [{ type: 'text' as const, text: message }],
@@ -208,16 +167,6 @@ function metadataResult<T extends object>(metadata: readonly T[]) {
     content: [{ type: 'text' as const, text: JSON.stringify(structuredContent) }],
     structuredContent,
   };
-}
-
-export async function listAccessibleSchemas(mysql: ConnectionLayer): Promise<readonly SchemaMetadata[]> {
-  const [rows] = await mysql.pool.query<SchemaRow[]>(queryOptions(mysql, LIST_SCHEMAS_SQL), [MAX_METADATA_RESULTS]);
-  return rows.slice(0, MAX_METADATA_RESULTS).map(({ schemaName }) => ({ schemaName }));
-}
-
-export async function listAccessibleTables(mysql: ConnectionLayer, schema: string): Promise<readonly TableMetadata[]> {
-  const [rows] = await mysql.pool.query<TableRow[]>(queryOptions(mysql, LIST_TABLES_SQL), [schema, MAX_METADATA_RESULTS]);
-  return rows.slice(0, MAX_METADATA_RESULTS).map(({ schemaName, tableName, tableType }) => ({ schemaName, tableName, tableType }));
 }
 
 export function registerDiscoveryTools(server: McpServer, mysql: ConnectionLayer): void {

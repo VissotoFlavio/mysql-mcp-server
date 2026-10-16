@@ -60,7 +60,7 @@ npm run lint
 npm test
 ```
 
-An integration check is opt-in and performs only a connection acquisition and release; it does not inspect schema or mutate data. Provide the required runtime environment variables externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
+An integration check is opt-in and performs only connection acquisition plus read-only metadata discovery; it does not mutate data. Provide the required runtime environment variables externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
 
 ```bash
 npm run test:integration
