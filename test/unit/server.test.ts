@@ -8,7 +8,7 @@ import { createMcpApplication } from '../../src/server.js';
 
 import { validEnvironment } from './fixtures.js';
 
-test('creates an MCP stdio server without registering database tools', async () => {
+test('creates an MCP stdio server and retains ownership of the database pool lifecycle', async () => {
   let poolClosed = false;
   const pool = {
     async end() {
