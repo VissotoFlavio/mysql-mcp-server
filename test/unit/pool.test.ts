@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ConnectionError, createConnectionLayer, verifyConnection } from '../../src/db/pool.js';
+
 import { validEnvironment } from './fixtures.js';
 
 test('creates a bounded pool with secure driver options', async () => {
@@ -62,4 +63,26 @@ test('releases a connection after the opt-in connectivity check', async () => {
 
   await verifyConnection(pool as never);
   assert.equal(released, true);
+});
+
+test('redacts cleanup failures after the opt-in connectivity check', async () => {
+  const pool = {
+    async getConnection() {
+      return {
+        release() {
+          throw new Error('untrusted release error');
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => verifyConnection(pool as never),
+    (error: unknown) => {
+      assert(error instanceof ConnectionError);
+      assert.match(error.message, /cleanup failed/);
+      assert.doesNotMatch(error.message, /untrusted release error/);
+      return true;
+    },
+  );
 });

@@ -69,12 +69,7 @@ function optionalValue(environment: Environment, name: string): string | undefin
   return value.trim();
 }
 
-function integerValue(
-  environment: Environment,
-  name: string,
-  fallback: number,
-  range: Readonly<{ min: number; max: number }>,
-): number {
+function integerValue(environment: Environment, name: string, fallback: number, range: Readonly<{ min: number; max: number }>): number {
   const raw = optionalValue(environment, name);
   if (raw === undefined) {
     return fallback;
@@ -120,7 +115,7 @@ function validateHost(host: string): string {
 }
 
 function validateIdentifier(value: string, name: string): string {
-  if (value.length > 64 || /[\u0000\r\n]/.test(value)) {
+  if (value.length > 64 || value.includes('\0') || /[\r\n]/.test(value)) {
     throw configurationError(`${name} contains unsupported characters.`);
   }
 
@@ -148,11 +143,13 @@ function loadTlsConfig(environment: Environment, readFile: ReadFile): TlsConfig 
     ['MYSQL_TLS_CERT_FILE', 'cert'],
     ['MYSQL_TLS_KEY_FILE', 'key'],
   ] as const;
-  const providedCertificates: Array<Readonly<{
-    environmentName: string;
-    driverName: 'ca' | 'cert' | 'key';
-    path: string;
-  }>> = [];
+  const providedCertificates: Array<
+    Readonly<{
+      environmentName: string;
+      driverName: 'ca' | 'cert' | 'key';
+      path: string;
+    }>
+  > = [];
 
   for (const [environmentName, driverName] of certificates) {
     const path = optionalValue(environment, environmentName);

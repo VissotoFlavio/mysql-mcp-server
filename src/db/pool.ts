@@ -54,13 +54,11 @@ export function createPool(config: ConnectionConfig, driver: PoolFactory = mysql
   }
 }
 
-export function createConnectionLayer(
-  {
-    environment = process.env,
-    driver = mysql,
-    readFile,
-  }: Readonly<{ environment?: Environment; driver?: PoolFactory; readFile?: ReadFile }> = {},
-): ConnectionLayer {
+export function createConnectionLayer({
+  environment = process.env,
+  driver = mysql,
+  readFile,
+}: Readonly<{ environment?: Environment; driver?: PoolFactory; readFile?: ReadFile }> = {}): ConnectionLayer {
   const config = loadConnectionConfig(environment, { readFile });
   const pool = createPool(config, driver);
   const queryOptions = Object.freeze({ timeout: config.queryTimeoutMs });
@@ -80,19 +78,17 @@ export function createConnectionLayer(
 }
 
 export async function verifyConnection(pool: Pick<Pool, 'getConnection'>): Promise<void> {
-  let connection: Awaited<ReturnType<Pool['getConnection']>> | undefined;
+  let connection: Awaited<ReturnType<Pool['getConnection']>>;
 
   try {
     connection = await pool.getConnection();
   } catch {
     throw new ConnectionError('Unable to connect to MySQL. Check the externally supplied MySQL configuration and network access.');
-  } finally {
-    if (connection) {
-      try {
-        connection.release();
-      } catch {
-        throw new ConnectionError('MySQL connection cleanup failed.');
-      }
-    }
+  }
+
+  try {
+    connection.release();
+  } catch {
+    throw new ConnectionError('MySQL connection cleanup failed.');
   }
 }
