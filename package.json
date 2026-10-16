@@ -1,0 +1,24 @@
+{
+  "name": "mysql-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure direct MySQL connection layer for an MCP server.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "check": "tsc --project tsconfig.test.json --noEmit",
+    "test": "tsx --test test/unit",
+    "test:integration": "node -e \"if (process.env.MYSQL_INTEGRATION_TEST !== 'true') throw new Error('Set MYSQL_INTEGRATION_TEST=true to run integration tests.');\" && tsx --test test/integration"
+  },
+  "dependencies": {
+    "mysql2": "^3.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
