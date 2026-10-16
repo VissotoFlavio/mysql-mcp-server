@@ -20,10 +20,10 @@ test('creates a bounded pool with secure driver options', async () => {
   const layer = createConnectionLayer({ environment: validEnvironment(), driver: driver as never });
 
   assert.equal(layer.pool, fakePool);
-  assert.equal(layer.queryTimeoutMs, 10_000);
-  assert.deepEqual(layer.queryOptions(), { timeout: 10_000 });
+  assert.equal(layer.queryTimeoutMs, 30_000);
+  assert.deepEqual(layer.queryOptions(), { timeout: 30_000 });
   assert.equal(suppliedOptions?.waitForConnections, true);
-  assert.equal(suppliedOptions?.connectionLimit, 5);
+  assert.equal(suppliedOptions?.connectionLimit, 2);
   assert.equal(suppliedOptions?.connectTimeout, 5_000);
   assert.equal(suppliedOptions?.multipleStatements, false);
   assert.equal(suppliedOptions?.ssl, undefined);

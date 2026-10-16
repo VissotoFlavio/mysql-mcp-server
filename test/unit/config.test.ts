@@ -10,9 +10,10 @@ test('loads a bounded configuration with conservative defaults', () => {
   const config = loadConnectionConfig(validEnvironment());
 
   assert.equal(config.port, DEFAULTS.port);
-  assert.equal(config.poolLimit, DEFAULTS.poolLimit);
+  assert.equal(config.poolLimit, 2);
+  assert.equal(config.queueLimit, DEFAULTS.queueLimit);
   assert.equal(config.connectTimeoutMs, DEFAULTS.connectTimeoutMs);
-  assert.equal(config.queryTimeoutMs, DEFAULTS.queryTimeoutMs);
+  assert.equal(config.queryTimeoutMs, 30_000);
   assert.equal(config.tls, undefined);
 });
 
@@ -35,7 +36,8 @@ test('rejects each required connection setting when missing', () => {
 test('rejects malformed and unsafe connection configuration', () => {
   assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_HOST: 'not a host' })), /MYSQL_HOST must be a hostname or IPv4 address/);
   assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_PORT: '0' })), /MYSQL_PORT must be between/);
-  assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_POOL_LIMIT: '21' })), /MYSQL_POOL_LIMIT must be between/);
+  assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_POOL_LIMIT: '3' })), /MYSQL_POOL_LIMIT must be between/);
+  assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_QUEUE_LIMIT: '0' })), /MYSQL_QUEUE_LIMIT must be between/);
   assert.throws(
     () => loadConnectionConfig(validEnvironment({ MYSQL_DATABASE: 'inventory\0archive' })),
     /MYSQL_DATABASE contains unsupported characters/,

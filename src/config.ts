@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 
 export const DEFAULTS = Object.freeze({
   port: 3306,
-  poolLimit: 5,
+  poolLimit: 2,
   queueLimit: 10,
   connectTimeoutMs: 5_000,
-  queryTimeoutMs: 10_000,
+  queryTimeoutMs: 30_000,
   idleTimeoutMs: 60_000,
 });
 
@@ -191,8 +191,8 @@ export function loadConnectionConfig(
     database: validateIdentifier(requiredValue(environment, 'MYSQL_DATABASE'), 'MYSQL_DATABASE'),
     user: validateIdentifier(requiredValue(environment, 'MYSQL_USER'), 'MYSQL_USER'),
     password: requiredValue(environment, 'MYSQL_PASSWORD', true),
-    poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 20 }),
-    queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 0, max: 100 }),
+    poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
+    queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),
     connectTimeoutMs: integerValue(environment, 'MYSQL_CONNECT_TIMEOUT_MS', DEFAULTS.connectTimeoutMs, { min: 100, max: 60_000 }),
     queryTimeoutMs: integerValue(environment, 'MYSQL_QUERY_TIMEOUT_MS', DEFAULTS.queryTimeoutMs, { min: 100, max: 60_000 }),
     idleTimeoutMs: integerValue(environment, 'MYSQL_IDLE_TIMEOUT_MS', DEFAULTS.idleTimeoutMs, { min: 1_000, max: 3_600_000 }),

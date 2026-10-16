@@ -10,22 +10,22 @@ Supply all operational values through the process environment when the applicati
 
 Use a dedicated least-privilege database account. This layer does not grant, change, or elevate database permissions.
 
-| Variable                   | Required | Purpose                                                                    |
-| -------------------------- | -------- | -------------------------------------------------------------------------- |
-| `MYSQL_HOST`               | Yes      | Hostname or IPv4 address only; no scheme, port, or path.                   |
-| `MYSQL_PORT`               | No       | TCP port. Defaults to the MySQL default.                                   |
-| `MYSQL_DATABASE`           | Yes      | Database identifier.                                                       |
-| `MYSQL_USER`               | Yes      | Database username.                                                         |
-| `MYSQL_PASSWORD`           | Yes      | Database password.                                                         |
-| `MYSQL_POOL_LIMIT`         | No       | Maximum pool size; default is deliberately small.                          |
-| `MYSQL_QUEUE_LIMIT`        | No       | Maximum queued acquisition requests.                                       |
-| `MYSQL_CONNECT_TIMEOUT_MS` | No       | Timeout for opening a database connection.                                 |
-| `MYSQL_QUERY_TIMEOUT_MS`   | No       | Timeout to pass to future query calls. The layer does not execute queries. |
-| `MYSQL_IDLE_TIMEOUT_MS`    | No       | Idle connection timeout.                                                   |
-| `MYSQL_TLS`                | No       | Enables TLS when set to `true`.                                            |
-| `MYSQL_TLS_CA_FILE`        | No       | Externally managed CA certificate path.                                    |
-| `MYSQL_TLS_CERT_FILE`      | No       | Externally managed client certificate path.                                |
-| `MYSQL_TLS_KEY_FILE`       | No       | Externally managed client key path.                                        |
+| Variable                   | Required | Purpose                                                         |
+| -------------------------- | -------- | --------------------------------------------------------------- |
+| `MYSQL_HOST`               | Yes      | Hostname or IPv4 address only; no scheme, port, or path.        |
+| `MYSQL_PORT`               | No       | TCP port. Defaults to the MySQL default.                        |
+| `MYSQL_DATABASE`           | Yes      | Database identifier.                                            |
+| `MYSQL_USER`               | Yes      | Database username.                                              |
+| `MYSQL_PASSWORD`           | Yes      | Database password.                                              |
+| `MYSQL_POOL_LIMIT`         | No       | Maximum pool size; defaults to and cannot exceed 2.             |
+| `MYSQL_QUEUE_LIMIT`        | No       | Maximum queued acquisition requests; must be between 1 and 100. |
+| `MYSQL_CONNECT_TIMEOUT_MS` | No       | Timeout for opening a database connection.                      |
+| `MYSQL_QUERY_TIMEOUT_MS`   | No       | Timeout to pass to future query calls; defaults to 30 seconds.  |
+| `MYSQL_IDLE_TIMEOUT_MS`    | No       | Idle connection timeout.                                        |
+| `MYSQL_TLS`                | No       | Enables TLS when set to `true`.                                 |
+| `MYSQL_TLS_CA_FILE`        | No       | Externally managed CA certificate path.                         |
+| `MYSQL_TLS_CERT_FILE`      | No       | Externally managed client certificate path.                     |
+| `MYSQL_TLS_KEY_FILE`       | No       | Externally managed client key path.                             |
 
 The layer reads optional TLS files only after TLS has been explicitly enabled. Peer verification cannot be disabled. Certificate paths and contents are not included in errors, and the repository ignores common environment and certificate-file patterns.
 
