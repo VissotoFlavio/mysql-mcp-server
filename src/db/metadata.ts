@@ -27,8 +27,7 @@ const DESCRIBE_TABLE_SQL = `
     columns.COLUMN_NAME AS columnName,
     columns.DATA_TYPE AS dataType,
     columns.IS_NULLABLE AS isNullable,
-    columns.COLUMN_KEY AS columnKey,
-    columns.COLUMN_DEFAULT IS NOT NULL AS hasDefault
+    columns.COLUMN_KEY AS columnKey
   FROM information_schema.TABLES AS tables
   INNER JOIN information_schema.COLUMNS AS columns
     ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
@@ -54,7 +53,6 @@ interface TableDescriptionRow extends TableRow {
   readonly dataType: string;
   readonly isNullable: 'YES' | 'NO';
   readonly columnKey: string;
-  readonly hasDefault: number;
 }
 
 export interface SchemaMetadata {
@@ -72,7 +70,6 @@ export interface ColumnMetadata {
   readonly dataType: string;
   readonly isNullable: boolean;
   readonly columnKey: string;
-  readonly hasDefault: boolean;
 }
 
 export interface TableDescription {
@@ -109,12 +106,11 @@ export async function describeAccessibleTable(mysql: ConnectionLayer, schema: st
       tableName: firstRow.tableName,
       tableType: firstRow.tableType,
     },
-    columns: boundedRows.map(({ columnName, dataType, isNullable, columnKey, hasDefault }) => ({
+    columns: boundedRows.map(({ columnName, dataType, isNullable, columnKey }) => ({
       columnName,
       dataType,
       isNullable: isNullable === 'YES',
       columnKey,
-      hasDefault: hasDefault === 1,
     })),
   };
 }

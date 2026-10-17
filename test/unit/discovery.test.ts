@@ -25,7 +25,6 @@ interface DescriptionRow extends MetadataRow {
   readonly dataType: string;
   readonly isNullable: 'YES' | 'NO';
   readonly columnKey: string;
-  readonly hasDefault: number;
 }
 
 function createApplication(query: (...args: unknown[]) => Promise<unknown>) {
@@ -242,7 +241,6 @@ test('describes a visible table with parameterized bounded column metadata', asy
           dataType: 'bigint',
           isNullable: 'NO',
           columnKey: 'PRI',
-          hasDefault: 0,
         },
         {
           schemaName: 'app',
@@ -252,7 +250,6 @@ test('describes a visible table with parameterized bounded column metadata', asy
           dataType: 'varchar',
           isNullable: 'YES',
           columnKey: '',
-          hasDefault: 1,
         },
       ] satisfies DescriptionRow[],
     ];
@@ -267,8 +264,8 @@ test('describes a visible table with parameterized bounded column metadata', asy
     assert.deepEqual(JSON.parse(toolText(response)), {
       table: { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE' },
       columns: [
-        { columnName: 'id', dataType: 'bigint', isNullable: false, columnKey: 'PRI', hasDefault: false },
-        { columnName: 'status', dataType: 'varchar', isNullable: true, columnKey: '', hasDefault: true },
+        { columnName: 'id', dataType: 'bigint', isNullable: false, columnKey: 'PRI' },
+        { columnName: 'status', dataType: 'varchar', isNullable: true, columnKey: '' },
       ],
     });
     assert.match((queryOptions as { sql: string }).sql, /FROM information_schema\.TABLES AS tables/);
@@ -278,6 +275,39 @@ test('describes a visible table with parameterized bounded column metadata', asy
     assert.match((queryOptions as { sql: string }).sql, /ORDER BY columns\.ORDINAL_POSITION ASC/);
     assert.equal((queryOptions as { timeout: number }).timeout, 30_000);
     assert.deepEqual(values, ['app', 'accounts', 100]);
+  } finally {
+    await client.close();
+  }
+});
+
+test('omits default metadata rather than conflating DEFAULT NULL with no default', async () => {
+  let queryOptions: unknown;
+  const application = createApplication(async (options) => {
+    queryOptions = options;
+    return [
+      [
+        {
+          schemaName: 'app',
+          tableName: 'nullable_defaults',
+          tableType: 'BASE TABLE',
+          columnName: 'optional_label',
+          dataType: 'varchar',
+          isNullable: 'YES',
+          columnKey: '',
+        } satisfies DescriptionRow,
+      ],
+    ];
+  });
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'app', table: 'nullable_defaults' },
+    });
+    const description = JSON.parse(toolText(response));
+    assert.doesNotMatch((queryOptions as { sql: string }).sql, /COLUMN_DEFAULT/);
+    assert.equal('hasDefault' in description.columns[0], false);
   } finally {
     await client.close();
   }
@@ -297,7 +327,6 @@ test('binds quoted-compatible MySQL identifiers without altering their values', 
           dataType: 'varchar',
           isNullable: 'NO',
           columnKey: '',
-          hasDefault: 0,
         } satisfies DescriptionRow,
       ],
     ];
@@ -327,7 +356,6 @@ test('represents a visible view in its table metadata', async () => {
         dataType: 'bigint',
         isNullable: 'NO',
         columnKey: '',
-        hasDefault: 0,
       } satisfies DescriptionRow,
     ],
   ]);
@@ -375,7 +403,6 @@ test('caps described column metadata when a driver returns more rows than the SQ
         dataType: 'varchar',
         isNullable: 'YES',
         columnKey: '',
-        hasDefault: 0,
       }) satisfies DescriptionRow,
   );
   const application = createApplication(async () => [rows]);
@@ -479,13 +506,12 @@ test('advertises discovery tools as read-only with output schemas', async () => 
                 items: {
                   type: 'object',
                   additionalProperties: false,
-                  required: ['columnName', 'dataType', 'isNullable', 'columnKey', 'hasDefault'],
+                  required: ['columnName', 'dataType', 'isNullable', 'columnKey'],
                   properties: {
                     columnName: { type: 'string' },
                     dataType: { type: 'string' },
                     isNullable: { type: 'boolean' },
                     columnKey: { type: 'string' },
-                    hasDefault: { type: 'boolean' },
                   },
                 },
               },

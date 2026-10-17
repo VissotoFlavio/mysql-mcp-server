@@ -6,6 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 import { type Environment, type ReadFile } from './config.js';
 import { createConnectionLayer, type ConnectionLayer, type PoolFactory } from './db/pool.js';
+import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
 
 const SERVER_INFO = Object.freeze({
@@ -29,6 +30,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   const mysql = createConnectionLayer(options);
   const server = new McpServer(SERVER_INFO);
   registerDiscoveryTools(server, mysql);
+  registerDescribeTableTool(server, mysql);
 
   return Object.freeze({
     mysql,
