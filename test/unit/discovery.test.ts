@@ -18,6 +18,16 @@ interface MetadataRow {
   readonly tableType?: string;
 }
 
+interface DescriptionRow extends MetadataRow {
+  readonly tableName: string;
+  readonly tableType: string;
+  readonly columnName: string;
+  readonly dataType: string;
+  readonly isNullable: 'YES' | 'NO';
+  readonly columnKey: string;
+  readonly hasDefault: number;
+}
+
 function createApplication(query: (...args: unknown[]) => Promise<unknown>) {
   return createMcpApplication({
     environment: validEnvironment(),
@@ -216,6 +226,175 @@ test('caps table metadata when a driver returns more rows than the SQL limit', a
   }
 });
 
+test('describes a visible table with parameterized bounded column metadata', async () => {
+  let queryOptions: unknown;
+  let values: unknown;
+  const application = createApplication(async (options, queryValues) => {
+    queryOptions = options;
+    values = queryValues;
+    return [
+      [
+        {
+          schemaName: 'app',
+          tableName: 'accounts',
+          tableType: 'BASE TABLE',
+          columnName: 'id',
+          dataType: 'bigint',
+          isNullable: 'NO',
+          columnKey: 'PRI',
+          hasDefault: 0,
+        },
+        {
+          schemaName: 'app',
+          tableName: 'accounts',
+          tableType: 'BASE TABLE',
+          columnName: 'status',
+          dataType: 'varchar',
+          isNullable: 'YES',
+          columnKey: '',
+          hasDefault: 1,
+        },
+      ] satisfies DescriptionRow[],
+    ];
+  });
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'app', table: 'accounts' },
+    });
+    assert.deepEqual(JSON.parse(toolText(response)), {
+      table: { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE' },
+      columns: [
+        { columnName: 'id', dataType: 'bigint', isNullable: false, columnKey: 'PRI', hasDefault: false },
+        { columnName: 'status', dataType: 'varchar', isNullable: true, columnKey: '', hasDefault: true },
+      ],
+    });
+    assert.match((queryOptions as { sql: string }).sql, /FROM information_schema\.TABLES AS tables/);
+    assert.match((queryOptions as { sql: string }).sql, /INNER JOIN information_schema\.COLUMNS AS columns/);
+    assert.match((queryOptions as { sql: string }).sql, /WHERE tables\.TABLE_SCHEMA = \?/);
+    assert.match((queryOptions as { sql: string }).sql, /AND tables\.TABLE_NAME = \?/);
+    assert.match((queryOptions as { sql: string }).sql, /ORDER BY columns\.ORDINAL_POSITION ASC/);
+    assert.equal((queryOptions as { timeout: number }).timeout, 30_000);
+    assert.deepEqual(values, ['app', 'accounts', 100]);
+  } finally {
+    await client.close();
+  }
+});
+
+test('binds quoted-compatible MySQL identifiers without altering their values', async () => {
+  let values: unknown;
+  const application = createApplication(async (_options, queryValues) => {
+    values = queryValues;
+    return [
+      [
+        {
+          schemaName: 'sales-2026',
+          tableName: 'ações 2024',
+          tableType: 'BASE TABLE',
+          columnName: 'ação',
+          dataType: 'varchar',
+          isNullable: 'NO',
+          columnKey: '',
+          hasDefault: 0,
+        } satisfies DescriptionRow,
+      ],
+    ];
+  });
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'sales-2026', table: 'ações 2024' },
+    });
+    assert.equal(response.result?.isError, undefined);
+    assert.deepEqual(values, ['sales-2026', 'ações 2024', 100]);
+  } finally {
+    await client.close();
+  }
+});
+
+test('represents a visible view in its table metadata', async () => {
+  const application = createApplication(async () => [
+    [
+      {
+        schemaName: 'reporting',
+        tableName: 'active_accounts',
+        tableType: 'VIEW',
+        columnName: 'id',
+        dataType: 'bigint',
+        isNullable: 'NO',
+        columnKey: '',
+        hasDefault: 0,
+      } satisfies DescriptionRow,
+    ],
+  ]);
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'reporting', table: 'active_accounts' },
+    });
+    const description = JSON.parse(toolText(response));
+    assert.equal(description.table.tableType, 'VIEW');
+    assert.equal(description.columns[0].columnName, 'id');
+  } finally {
+    await client.close();
+  }
+});
+
+test('returns a safe actionable error for a missing or inaccessible table or view', async () => {
+  const application = createApplication(async () => [[]]);
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'app', table: 'missing_table' },
+    });
+    assert.equal(response.result?.isError, true);
+    assert.match(toolText(response), /not found or is not accessible/);
+    assert.doesNotMatch(toolText(response), /information_schema|mysql|query/i);
+  } finally {
+    await client.close();
+  }
+});
+
+test('caps described column metadata when a driver returns more rows than the SQL limit', async () => {
+  const rows = Array.from(
+    { length: 101 },
+    (_, index) =>
+      ({
+        schemaName: 'app',
+        tableName: 'wide_table',
+        tableType: 'BASE TABLE',
+        columnName: `column_${index}`,
+        dataType: 'varchar',
+        isNullable: 'YES',
+        columnKey: '',
+        hasDefault: 0,
+      }) satisfies DescriptionRow,
+  );
+  const application = createApplication(async () => [rows]);
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'app', table: 'wide_table' },
+    });
+    const description = JSON.parse(toolText(response));
+    assert.equal(description.columns.length, 100);
+    assert.equal(description.columns[0].columnName, 'column_0');
+    assert.equal(description.columns.at(-1).columnName, 'column_99');
+  } finally {
+    await client.close();
+  }
+});
+
 test('advertises discovery tools as read-only with output schemas', async () => {
   const application = createApplication(async () => [[]]);
   const client = await connect(application);
@@ -276,6 +455,43 @@ test('advertises discovery tools as read-only with output schemas', async () => 
             },
           },
         },
+        {
+          name: 'describe_table',
+          readOnlyHint: true,
+          outputSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['table', 'columns'],
+            properties: {
+              table: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['schemaName', 'tableName', 'tableType'],
+                properties: {
+                  schemaName: { type: 'string' },
+                  tableName: { type: 'string' },
+                  tableType: { type: 'string' },
+                },
+              },
+              columns: {
+                type: 'array',
+                maxItems: 100,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['columnName', 'dataType', 'isNullable', 'columnKey', 'hasDefault'],
+                  properties: {
+                    columnName: { type: 'string' },
+                    dataType: { type: 'string' },
+                    isNullable: { type: 'boolean' },
+                    columnKey: { type: 'string' },
+                    hasDefault: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+          },
+        },
       ],
     );
   } finally {
@@ -303,6 +519,34 @@ test('rejects invalid table filters without calling the pool', async () => {
   }
 });
 
+test('rejects invalid table descriptions before querying the pool', async () => {
+  let calls = 0;
+  const application = createApplication(async () => {
+    calls += 1;
+    return [[]];
+  });
+  const client = await connect(application);
+
+  try {
+    for (const arguments_ of [
+      {},
+      { schema: 'app' },
+      { schema: 'app', table: '' },
+      { schema: 'app\nname', table: 'accounts' },
+      { schema: 'app', table: 'accounts\u0000archive' },
+      { schema: 'app', table: 123 },
+      { schema: 'app', table: 'accounts', extra: true },
+    ]) {
+      const response = await client.request('tools/call', { name: 'describe_table', arguments: arguments_ });
+      assert.equal(response.result?.isError, true);
+      assert.match(toolText(response), /Invalid arguments/);
+    }
+    assert.equal(calls, 0);
+  } finally {
+    await client.close();
+  }
+});
+
 test('sanitizes metadata query failures', async () => {
   const application = createApplication(async () => {
     throw new Error('mysql://user:secret@host/internal query detail');
@@ -313,6 +557,25 @@ test('sanitizes metadata query failures', async () => {
     const response = await client.request('tools/call', { name: 'list_accessible_schemas', arguments: {} });
     assert.equal(response.result?.isError, true);
     assert.match(toolText(response), /Unable to list accessible schemas/);
+    assert.doesNotMatch(toolText(response), /secret|query detail/);
+  } finally {
+    await client.close();
+  }
+});
+
+test('sanitizes table description query failures', async () => {
+  const application = createApplication(async () => {
+    throw new Error('mysql://user:secret@host/internal query detail');
+  });
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'describe_table',
+      arguments: { schema: 'app', table: 'accounts' },
+    });
+    assert.equal(response.result?.isError, true);
+    assert.match(toolText(response), /Unable to describe the requested table or view/);
     assert.doesNotMatch(toolText(response), /secret|query detail/);
   } finally {
     await client.close();
