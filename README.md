@@ -1,8 +1,8 @@
 # MySQL MCP Server
 
-This repository provides the direct MySQL connection layer and local stdio bootstrap for an MCP server. Configuration lives in `src/config.ts`, database pooling in `src/db/pool.ts`, and the MCP entry point is `src/server.ts`. Metadata discovery and query tools remain outside this issue's scope.
+This repository provides the direct MySQL connection layer and local stdio MCP server. Configuration lives in `src/config.ts`, database pooling in `src/db/pool.ts`, and the MCP entry point is `src/server.ts`.
 
-The bootstrap creates one bounded pool and deliberately exposes no MCP tools, metadata discovery, query execution, or HTTP hosting.
+The server creates one bounded pool and exposes only two read-only metadata tools: `list_accessible_schemas` and `list_accessible_tables`. Both use `information_schema`, return at most 100 deterministically ordered metadata records, and reflect the configured account's effective access. The table tool requires a `schema` filter. It does not expose arbitrary SQL, table rows, or HTTP hosting.
 
 ## Runtime configuration
 
@@ -60,7 +60,7 @@ npm run lint
 npm test
 ```
 
-An integration check is opt-in and performs only a connection acquisition and release; it does not inspect schema or mutate data. Provide the required runtime environment variables externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
+An integration check is opt-in and performs only connection acquisition plus read-only metadata discovery; it does not mutate data. Provide the required runtime environment variables externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
 
 ```bash
 npm run test:integration
