@@ -27,6 +27,23 @@ function hasSafeSelectOutput(select: AstNode): boolean {
   );
 }
 
+function isUserVariableAssignment(node: AstNode): boolean {
+  return node.type === 'assign' && isAstNode(node.left) && node.left.type === 'var' && node.left.prefix === '@';
+}
+
+function isStateChangingLockFunction(node: AstNode): boolean {
+  if (node.type !== 'function' || !isAstNode(node.name) || !Array.isArray(node.name.name)) {
+    return false;
+  }
+
+  const lastNamePart = node.name.name.at(-1);
+  if (!isAstNode(lastNamePart) || typeof lastNamePart.value !== 'string') {
+    return false;
+  }
+
+  return ['get_lock', 'release_lock', 'release_all_locks'].includes(lastNamePart.value.toLowerCase());
+}
+
 function containsUnsafeNestedStatement(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.some(containsUnsafeNestedStatement);
@@ -34,6 +51,10 @@ function containsUnsafeNestedStatement(value: unknown): boolean {
 
   if (!isAstNode(value)) {
     return false;
+  }
+
+  if (isUserVariableAssignment(value) || isStateChangingLockFunction(value)) {
+    return true;
   }
 
   if (
@@ -105,7 +126,10 @@ export function assertReadOnlySql(sql: string): void {
     throw new SqlPolicyError();
   }
 
-  if (Array.isArray(ast) || !isAstNode(ast) || !isSafeStatement(ast)) {
+  const statements = Array.isArray(ast) ? ast : [ast];
+  const statement = statements[0];
+
+  if (statements.length !== 1 || !isAstNode(statement) || !isSafeStatement(statement)) {
     throw new SqlPolicyError();
   }
 }

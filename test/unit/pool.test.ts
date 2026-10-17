@@ -92,6 +92,12 @@ test('rejects unsafe SQL before the driver is called', async () => {
     "SELECT 1 /*!50000 INTO OUTFILE 'leak.txt' */",
     'EXPLAIN DELETE FROM accounts',
     'WITH changed AS (DELETE FROM accounts RETURNING id) SELECT * FROM changed',
+    'SELECT @review_variable := 1',
+    "SELECT get_lock('mcp-review', 1)",
+    "SELECT RELEASE_LOCK('mcp-review')",
+    'SELECT RELEASE_ALL_LOCKS()',
+    "WITH locks AS (SELECT GET_LOCK('mcp-review', 1)) SELECT * FROM locks",
+    "EXPLAIN SELECT RELEASE_LOCK('mcp-review')",
     'SHOW CREATE TRIGGER audit_trigger',
     'DESCRIBE accounts',
     'this is not SQL',
@@ -119,11 +125,11 @@ test('allows only SELECT, safe CTE, and EXPLAIN SELECT statement forms', async (
     },
   });
 
-  for (const sql of ['SELECT 1', 'WITH current_value AS (SELECT 1) SELECT * FROM current_value', 'EXPLAIN SELECT * FROM accounts']) {
+  for (const sql of ['SELECT 1', 'SELECT 1;', 'WITH current_value AS (SELECT 1) SELECT * FROM current_value', 'EXPLAIN SELECT * FROM accounts']) {
     await layer.query({ sql, timeout: 30_000 });
   }
 
-  assert.equal(calls, 3);
+  assert.equal(calls, 4);
 });
 
 test('redacts driver query errors', async () => {
