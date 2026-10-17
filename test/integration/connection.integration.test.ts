@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { MAX_METADATA_RESULTS, describeAccessibleTable, listAccessibleSchemas, listAccessibleTables } from '../../src/db/metadata.js';
-import { createConnectionLayer, verifyConnection } from '../../src/db/pool.js';
+import { createConnectionLayer } from '../../src/db/pool.js';
 
 test(
   'connects using externally supplied MySQL configuration',
@@ -14,8 +14,7 @@ test(
     const schema = process.env.MYSQL_DATABASE;
 
     try {
-      await verifyConnection(layer.pool);
-      assert.ok(layer.pool);
+      await layer.verifyConnection();
 
       assert.ok(schema);
       const schemas = await listAccessibleSchemas(layer);
