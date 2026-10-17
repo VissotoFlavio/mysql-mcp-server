@@ -35,10 +35,10 @@ Install declared dependencies, build the source, then start the local MCP stdio 
 
 ```bash
 npm run build
-npm start
+node dist/server.js
 ```
 
-The server validates runtime configuration and composes the MySQL connection layer at process startup. It communicates exclusively over standard input/output and does not open an HTTP listener.
+The server validates runtime configuration and composes the MySQL connection layer at process startup. It communicates exclusively over standard input/output and does not open an HTTP listener. Do not run it through a package-manager command that writes status messages to standard output: an MCP stdio server must reserve standard output for protocol messages. If an npm wrapper is required, use `npm --silent start`.
 
 To compose the layer in another local entry point:
 
