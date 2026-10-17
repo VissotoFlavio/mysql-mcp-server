@@ -16,7 +16,7 @@
     "format:check": "prettier --check --ignore-path .gitignore .",
     "start": "node dist/server.js",
     "test": "tsx --test \"test/unit/**/*.test.ts\"",
-    "test:integration": "node -e \"if (process.env.MYSQL_INTEGRATION_TEST !== 'true') throw new Error('Set MYSQL_INTEGRATION_TEST=true to run integration tests.');\" && tsx --test test/integration"
+    "test:integration": "node -e \"if (process.env.MYSQL_INTEGRATION_TEST !== 'true') throw new Error('Set MYSQL_INTEGRATION_TEST=true to run integration tests.');\" && tsx --test \"test/integration/**/*.test.ts\""
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",
