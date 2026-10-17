@@ -2,7 +2,7 @@
 
 This repository provides the direct MySQL connection layer and local stdio MCP server. Configuration lives in `src/config.ts`, database pooling in `src/db/pool.ts`, and the MCP entry point is `src/server.ts`.
 
-The server creates one bounded pool and exposes only two read-only metadata tools: `list_accessible_schemas` and `list_accessible_tables`. Both use `information_schema`, return at most 100 deterministically ordered metadata records, and reflect the configured account's effective access. The table tool requires a `schema` filter. It does not expose arbitrary SQL, table rows, or HTTP hosting.
+The server creates one bounded pool and exposes only read-only metadata tools: `list_accessible_schemas`, `list_accessible_tables`, and `describe_table`. They use `information_schema`, return bounded deterministically ordered metadata, and reflect the configured account's effective access. The table-list tool requires a `schema` filter; `describe_table` requires validated `schema` and `table` identifiers and returns table or view metadata with up to 100 column descriptions. It does not expose arbitrary SQL, table rows, or HTTP hosting.
 
 ## Runtime configuration
 
@@ -35,10 +35,10 @@ Install declared dependencies, build the source, then start the local MCP stdio 
 
 ```bash
 npm run build
-npm start
+node dist/server.js
 ```
 
-The server validates runtime configuration and composes the MySQL connection layer at process startup. It communicates exclusively over standard input/output and does not open an HTTP listener.
+The server validates runtime configuration and composes the MySQL connection layer at process startup. It communicates exclusively over standard input/output and does not open an HTTP listener. Do not run it through a package-manager command that writes status messages to standard output: an MCP stdio server must reserve standard output for protocol messages. If an npm wrapper is required, use `npm --silent start`.
 
 To compose the layer in another local entry point:
 
@@ -60,7 +60,7 @@ npm run lint
 npm test
 ```
 
-An integration check is opt-in and performs only connection acquisition plus read-only metadata discovery; it does not mutate data. Provide the required runtime environment variables externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
+An integration check is opt-in and performs only connection acquisition plus read-only metadata discovery; it does not mutate data. Provide the required runtime environment variables externally, set `MYSQL_INTEGRATION_TEST` to `true`, and set `MYSQL_INTEGRATION_TABLE` to one accessible table or view. Set `MYSQL_INTEGRATION_SCHEMA` only when it differs from `MYSQL_DATABASE`, then run:
 
 ```bash
 npm run test:integration
