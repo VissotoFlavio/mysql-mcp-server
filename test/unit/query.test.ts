@@ -156,17 +156,19 @@ test('requires an explicit literal query limit of at most 100 rows', async () =>
   const client = await connect(application);
 
   try {
-    for (const sql of ['SELECT id FROM accounts LIMIT 3', 'SELECT id FROM accounts LIMIT 1 OFFSET 3']) {
+    for (const sql of ['SELECT id FROM accounts LIMIT 3', 'SELECT id FROM accounts LIMIT 1, 3', 'SELECT id FROM accounts LIMIT 1 OFFSET 3']) {
       const response = await client.request('tools/call', { name: 'execute_read_only_query', arguments: { sql, parameters: [] } });
       assert.equal(response.result?.isError, undefined);
     }
 
     assert.equal(suppliedSql[0], 'SELECT id FROM accounts LIMIT 3');
-    assert.equal(suppliedSql[1], 'SELECT id FROM accounts LIMIT 1 OFFSET 3');
+    assert.equal(suppliedSql[1], 'SELECT id FROM accounts LIMIT 1, 3');
+    assert.equal(suppliedSql[2], 'SELECT id FROM accounts LIMIT 1 OFFSET 3');
 
     for (const sql of [
       'SELECT id FROM accounts',
       'SELECT id FROM accounts LIMIT 101',
+      'SELECT id FROM accounts LIMIT 1, 101',
       'SELECT id FROM accounts LIMIT 500 OFFSET 1',
       'SELECT id FROM accounts LIMIT ?',
     ]) {
