@@ -4,6 +4,10 @@
 
 Use it with a dedicated MySQL account that has only the minimum read permissions required. The server neither grants nor elevates database permissions.
 
+## Project status
+
+**Experimental — available for controlled evaluation.** `mysql-mcp-server` is under active development and is appropriate for local testing with an isolated, masked, or otherwise non-sensitive database and a dedicated least-privilege account. It is not presented as production-ready; interfaces, operational guidance, and behavior may change before a stable release.
+
 ## Why this exists
 
 When a developer is investigating a legacy or unfamiliar MySQL database, an AI agent needs accurate context before it can help. Manually copying schema details into a conversation is slow, becomes stale, and can expose more information than necessary.
