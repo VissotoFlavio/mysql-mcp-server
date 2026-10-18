@@ -11,6 +11,9 @@ import { validEnvironment } from './fixtures.js';
 test('creates an MCP stdio server and retains ownership of the database pool lifecycle', async () => {
   let poolClosed = false;
   const pool = {
+    async query() {
+      return [[]];
+    },
     async end() {
       poolClosed = true;
     },
@@ -26,7 +29,6 @@ test('creates an MCP stdio server and retains ownership of the database pool lif
   const transport = new StdioServerTransport(new PassThrough(), new PassThrough());
 
   await application.server.connect(transport);
-  assert.equal(application.mysql.pool, pool);
 
   await application.close();
   assert.equal(poolClosed, true);

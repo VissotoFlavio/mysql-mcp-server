@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",
-    "mysql2": "^3.14.0"
+    "mysql2": "^3.14.0",
+    "node-sql-parser": "^5.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

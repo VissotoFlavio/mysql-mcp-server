@@ -1,6 +1,8 @@
-import mysql, { type Pool, type PoolOptions } from 'mysql2/promise';
+import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues } from 'mysql2/promise';
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
+
+import { assertReadOnlySql } from './sql-policy.js';
 
 export class ConnectionError extends Error {
   readonly code = 'MYSQL_CONNECTION_FAILED';
@@ -16,9 +18,13 @@ export interface PoolFactory {
 }
 
 export interface ConnectionLayer {
-  readonly pool: Pool;
   readonly queryTimeoutMs: number;
   queryOptions(): Readonly<{ timeout: number }>;
+  query<T extends QueryResult>(
+    options: Readonly<{ sql: string; timeout: number }>,
+    values?: QueryValues,
+  ): Promise<[T, import('mysql2').FieldPacket[]]>;
+  verifyConnection(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -42,7 +48,7 @@ function toPoolOptions(config: ConnectionConfig): PoolOptions {
   };
 }
 
-export function createPool(config: ConnectionConfig, driver: PoolFactory = mysql): Pool {
+function createPool(config: ConnectionConfig, driver: PoolFactory = mysql): Pool {
   if (!driver || typeof driver.createPool !== 'function') {
     throw new TypeError('A MySQL driver with createPool(options) is required.');
   }
@@ -64,9 +70,23 @@ export function createConnectionLayer({
   const queryOptions = Object.freeze({ timeout: config.queryTimeoutMs });
 
   return Object.freeze({
-    pool,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
+    async query<T extends QueryResult>(
+      options: Readonly<{ sql: string; timeout: number }>,
+      values?: QueryValues,
+    ): Promise<[T, import('mysql2').FieldPacket[]]> {
+      assertReadOnlySql(options.sql);
+
+      try {
+        return await pool.query<T>(options, values);
+      } catch {
+        throw new ConnectionError('Unable to execute the read-only query.');
+      }
+    },
+    async verifyConnection(): Promise<void> {
+      await verifyConnection(pool);
+    },
     async close(): Promise<void> {
       try {
         await pool.end();
