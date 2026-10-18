@@ -35,23 +35,23 @@ The command above is a long-running stdio server. Its standard output is reserve
 
 All configuration is validated at startup. The values below are names and constraints, not sample credentials. Keep the values in the launching process or a local secret-managed file.
 
-| Variable | Required | Constraint or default |
-| --- | --- | --- |
-| `MYSQL_HOST` | Yes | Hostname or IPv4 address only; no scheme, port, or path. |
-| `MYSQL_PORT` | No | Integer 1–65535; defaults to 3306. |
-| `MYSQL_DATABASE` | Yes | Non-empty identifier up to 64 characters; no NUL or line breaks. |
-| `MYSQL_USER` | Yes | Non-empty identifier up to 64 characters; no NUL or line breaks. |
-| `MYSQL_PASSWORD` | Yes | Non-empty value. |
-| `MYSQL_POOL_LIMIT` | No | Integer 1–2; defaults to 2. |
-| `MYSQL_QUEUE_LIMIT` | No | Integer 1–100; defaults to 10. |
-| `MYSQL_CONNECT_TIMEOUT_MS` | No | Integer 100–60000; defaults to 5000. |
-| `MYSQL_QUERY_TIMEOUT_MS` | No | Integer 100–60000; defaults to 30000. |
-| `MYSQL_IDLE_TIMEOUT_MS` | No | Integer 1000–3600000; defaults to 60000. |
-| `MYSQL_TLS` | No | `true` enables TLS; defaults to `false`. |
-| `MYSQL_TLS_REJECT_UNAUTHORIZED` | No | May only be `true`; peer verification cannot be disabled. |
-| `MYSQL_TLS_CA_FILE` | No | Path to externally managed CA material; requires `MYSQL_TLS=true`. |
-| `MYSQL_TLS_CERT_FILE` | No | Path to externally managed client certificate material; requires `MYSQL_TLS=true`. |
-| `MYSQL_TLS_KEY_FILE` | No | Path to externally managed client key material; requires `MYSQL_TLS=true`. |
+| Variable                        | Required | Constraint or default                                                              |
+| ------------------------------- | -------- | ---------------------------------------------------------------------------------- |
+| `MYSQL_HOST`                    | Yes      | Hostname or IPv4 address only; no scheme, port, or path.                           |
+| `MYSQL_PORT`                    | No       | Integer 1–65535; defaults to 3306.                                                 |
+| `MYSQL_DATABASE`                | Yes      | Non-empty identifier up to 64 characters; no NUL or line breaks.                   |
+| `MYSQL_USER`                    | Yes      | Non-empty identifier up to 64 characters; no NUL or line breaks.                   |
+| `MYSQL_PASSWORD`                | Yes      | Non-empty value.                                                                   |
+| `MYSQL_POOL_LIMIT`              | No       | Integer 1–2; defaults to 2.                                                        |
+| `MYSQL_QUEUE_LIMIT`             | No       | Integer 1–100; defaults to 10.                                                     |
+| `MYSQL_CONNECT_TIMEOUT_MS`      | No       | Integer 100–60000; defaults to 5000.                                               |
+| `MYSQL_QUERY_TIMEOUT_MS`        | No       | Integer 100–60000; defaults to 30000.                                              |
+| `MYSQL_IDLE_TIMEOUT_MS`         | No       | Integer 1000–3600000; defaults to 60000.                                           |
+| `MYSQL_TLS`                     | No       | `true` enables TLS; defaults to `false`.                                           |
+| `MYSQL_TLS_REJECT_UNAUTHORIZED` | No       | May only be `true`; peer verification cannot be disabled.                          |
+| `MYSQL_TLS_CA_FILE`             | No       | Path to externally managed CA material; requires `MYSQL_TLS=true`.                 |
+| `MYSQL_TLS_CERT_FILE`           | No       | Path to externally managed client certificate material; requires `MYSQL_TLS=true`. |
+| `MYSQL_TLS_KEY_FILE`            | No       | Path to externally managed client key material; requires `MYSQL_TLS=true`.         |
 
 TLS files are read only after TLS is explicitly enabled. Startup and tool errors are intentionally safe: they guide an operator to check configuration, connectivity, parameters, or permissions without returning credentials, certificate contents, or raw database errors.
 
@@ -69,13 +69,13 @@ Those paths are placeholders, not a client-specific configuration format. Use th
 
 The server registers exactly these five read-only tools. Successful calls include `structuredContent` and a JSON text representation of the same result, so integrations can consume the documented object shapes. Metadata is deterministically ordered; query row order remains the order returned by MySQL, so clients should use SQL ordering when they require it.
 
-| Tool | Input | Structured result and limits |
-| --- | --- | --- |
-| `list_accessible_schemas` | No input. | `{ metadata: [{ schemaName }] }`; at most 100 schemas, ordered by schema name ascending. |
-| `list_accessible_tables` | Exactly `{ schema }`, where `schema` is a non-empty string of at most 64 characters. | `{ metadata: [{ schemaName, tableName, tableType }] }`; at most 100 tables or views in that schema, ordered by schema then table name ascending. |
-| `describe_table` | Exactly `{ schema, table }`; each is a non-empty identifier of at most 64 characters and has no control characters. | `{ table: { schemaName, tableName, tableType }, columns: [{ columnName, dataType, isNullable, columnKey }] }`; describes one accessible table or view and returns at most 100 columns in ordinal position order. |
+| Tool                      | Input                                                                                                                                                                                        | Structured result and limits                                                                                                                                                                                                                |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_accessible_schemas` | No input.                                                                                                                                                                                    | `{ metadata: [{ schemaName }] }`; at most 100 schemas, ordered by schema name ascending.                                                                                                                                                    |
+| `list_accessible_tables`  | Exactly `{ schema }`, where `schema` is a non-empty string of at most 64 characters.                                                                                                         | `{ metadata: [{ schemaName, tableName, tableType }] }`; at most 100 tables or views in that schema, ordered by schema then table name ascending.                                                                                            |
+| `describe_table`          | Exactly `{ schema, table }`; each is a non-empty identifier of at most 64 characters and has no control characters.                                                                          | `{ table: { schemaName, tableName, tableType }, columns: [{ columnName, dataType, isNullable, columnKey }] }`; describes one accessible table or view and returns at most 100 columns in ordinal position order.                            |
 | `execute_read_only_query` | Exactly `{ sql, parameters }`. `sql` is 1–10000 characters; `parameters` has at most 100 JSON scalars (`string`, finite `number`, `boolean`, or `null`), with strings up to 8192 characters. | `{ columns: [{ name, type }], rows: [...] }`; at most 100 columns, 100 rows, and 512 KiB of serialized JSON. Values are JSON-compatible; returned big integers are strings, dates are ISO timestamps, and binary values are base64 strings. |
-| `explain_read_only_query` | The same input and validation as `execute_read_only_query`. Send the SELECT or CTE itself, not an `EXPLAIN` statement. | The same bounded `{ columns, rows }` shape, containing the MySQL `EXPLAIN` result. It uses `EXPLAIN`, never `EXPLAIN ANALYZE`. |
+| `explain_read_only_query` | The same input and validation as `execute_read_only_query`. Send the SELECT or CTE itself, not an `EXPLAIN` statement.                                                                       | The same bounded `{ columns, rows }` shape, containing the MySQL `EXPLAIN` result. It uses `EXPLAIN`, never `EXPLAIN ANALYZE`.                                                                                                              |
 
 For both query tools, the SQL must be one policy-approved `SELECT` or read-only CTE and must contain a literal `LIMIT` from 0 through 100. Bind values through `parameters`; a parameter cannot replace the required literal `LIMIT`. Invalid SQL, oversized results, timeouts, unavailable objects, and connection failures return a safe MCP error result rather than an unfiltered driver error.
 
