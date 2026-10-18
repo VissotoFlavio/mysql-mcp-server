@@ -4,12 +4,12 @@ import type { McpServer, StandardSchemaWithJSON } from '@modelcontextprotocol/se
 import type { FieldPacket, RowDataPacket } from 'mysql2';
 import mysql from 'mysql2/promise';
 
-import type { ConnectionLayer } from '../db/pool.js';
-import { prepareBoundedSelectSql, SqlPolicyError } from '../db/sql-policy.js';
+import { QueryTimeoutError, type ConnectionLayer } from '../db/pool.js';
+import { assertBoundedSelectSql, SqlPolicyError } from '../db/sql-policy.js';
 
 export const MAX_QUERY_RESULTS = 100;
 export const MAX_QUERY_COLUMNS = 100;
-export const MAX_QUERY_RESPONSE_BYTES = 1_048_576;
+export const MAX_QUERY_RESPONSE_BYTES = 524_288;
 export const MAX_QUERY_SQL_LENGTH = 10_000;
 export const MAX_QUERY_PARAMETERS = 100;
 export const MAX_QUERY_PARAMETER_LENGTH = 8_192;
@@ -76,17 +76,16 @@ function isQueryInput(value: unknown): value is QueryInput {
     input.sql.length <= MAX_QUERY_SQL_LENGTH &&
     Array.isArray(input.parameters) &&
     input.parameters.length <= MAX_QUERY_PARAMETERS &&
-    input.parameters.every(isQueryValue)
+    input.parameters.every(isQueryParameter)
   );
 }
 
 function isQueryValue(value: unknown): value is QueryValue {
-  return (
-    value === null ||
-    typeof value === 'boolean' ||
-    (typeof value === 'number' && Number.isFinite(value)) ||
-    (typeof value === 'string' && value.length <= MAX_QUERY_PARAMETER_LENGTH)
-  );
+  return value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) || typeof value === 'string';
+}
+
+function isQueryParameter(value: unknown): value is QueryValue {
+  return isQueryValue(value) && (typeof value !== 'string' || value.length <= MAX_QUERY_PARAMETER_LENGTH);
 }
 
 function isQueryResult(value: unknown): value is QueryResult {
@@ -253,8 +252,8 @@ export function registerReadOnlyQueryTool(server: McpServer, mysql: ConnectionLa
     },
     async ({ sql, parameters }) => {
       try {
-        const boundedSql = prepareBoundedSelectSql(sql, MAX_QUERY_RESULTS);
-        const [rows, fields] = await mysql.query<RowDataPacket[]>({ ...mysql.queryOptions(), sql: boundedSql }, [...parameters]);
+        assertBoundedSelectSql(sql, MAX_QUERY_RESULTS);
+        const [rows, fields] = await mysql.query<RowDataPacket[]>({ ...mysql.queryOptions(), sql }, [...parameters]);
         const result = toQueryResult(rows, fields);
         return queryResult(result, serializeQueryResult(result));
       } catch (error) {
@@ -263,7 +262,11 @@ export function registerReadOnlyQueryTool(server: McpServer, mysql: ConnectionLa
         }
 
         if (error instanceof QueryResponseLimitError) {
-          return errorResult('The query result exceeds the 1 MiB response limit. Refine the query and try again.');
+          return errorResult('The query result exceeds the 512 KiB response limit. Refine the query and try again.');
+        }
+
+        if (error instanceof QueryTimeoutError) {
+          return errorResult('The query timed out. Reduce the result size or simplify the query and try again.');
         }
 
         return errorResult('Unable to execute the query. Verify the configured MySQL connection and query parameters.');

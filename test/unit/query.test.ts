@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import test from 'node:test';
 
 import { InMemoryTransport, LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/server';
@@ -86,7 +87,7 @@ test('executes an approved parameterized SELECT with the configured timeout and 
   try {
     const response = await client.request('tools/call', {
       name: 'execute_read_only_query',
-      arguments: { sql: 'SELECT id, active, nickname FROM accounts WHERE id = ?', parameters: [42] },
+      arguments: { sql: 'SELECT id, active, nickname FROM accounts WHERE id = ? LIMIT 100', parameters: [42] },
     });
 
     assert.deepEqual(JSON.parse(toolText(response)), {
@@ -97,7 +98,7 @@ test('executes an approved parameterized SELECT with the configured timeout and 
       ],
       rows: [{ id: 42, active: true, nickname: null }],
     });
-    assert.match((queryOptions as { sql: string }).sql, /WHERE `id` = \? LIMIT 100$/);
+    assert.equal((queryOptions as { sql: string }).sql, 'SELECT id, active, nickname FROM accounts WHERE id = ? LIMIT 100');
     assert.equal((queryOptions as { timeout: number }).timeout, 30_000);
     assert.deepEqual(values, [42]);
   } finally {
@@ -116,11 +117,11 @@ test('executes a read-only common table expression through the same bounded quer
   try {
     const response = await client.request('tools/call', {
       name: 'execute_read_only_query',
-      arguments: { sql: 'WITH visible AS (SELECT id FROM accounts) SELECT id FROM visible', parameters: [] },
+      arguments: { sql: 'WITH visible AS (SELECT id FROM accounts) SELECT id FROM visible LIMIT 100', parameters: [] },
     });
 
     assert.equal(response.result?.isError, undefined);
-    assert.match((queryOptions as { sql: string }).sql, /^WITH `visible` AS \(SELECT `id` FROM `accounts`\) SELECT `id` FROM `visible` LIMIT 100$/);
+    assert.equal((queryOptions as { sql: string }).sql, 'WITH visible AS (SELECT id FROM accounts) SELECT id FROM visible LIMIT 100');
   } finally {
     await client.close();
   }
@@ -134,7 +135,7 @@ test('caps returned rows even if a driver ignores the SQL result limit', async (
   try {
     const response = await client.request('tools/call', {
       name: 'execute_read_only_query',
-      arguments: { sql: 'SELECT id FROM accounts', parameters: [] },
+      arguments: { sql: 'SELECT id FROM accounts LIMIT 100', parameters: [] },
     });
 
     const result = JSON.parse(toolText(response));
@@ -146,7 +147,7 @@ test('caps returned rows even if a driver ignores the SQL result limit', async (
   }
 });
 
-test('preserves a smaller literal query limit while capping a larger one', async () => {
+test('requires an explicit literal query limit of at most 100 rows', async () => {
   const suppliedSql: string[] = [];
   const application = createApplication(async (options) => {
     suppliedSql.push((options as { sql: string }).sql);
@@ -155,13 +156,24 @@ test('preserves a smaller literal query limit while capping a larger one', async
   const client = await connect(application);
 
   try {
-    for (const sql of ['SELECT id FROM accounts LIMIT 3', 'SELECT id FROM accounts LIMIT 1, 500']) {
+    for (const sql of ['SELECT id FROM accounts LIMIT 3', 'SELECT id FROM accounts LIMIT 1 OFFSET 3']) {
       const response = await client.request('tools/call', { name: 'execute_read_only_query', arguments: { sql, parameters: [] } });
       assert.equal(response.result?.isError, undefined);
     }
 
-    assert.match(suppliedSql[0] ?? '', /LIMIT 3$/);
-    assert.match(suppliedSql[1] ?? '', /LIMIT 1, 100$/);
+    assert.equal(suppliedSql[0], 'SELECT id FROM accounts LIMIT 3');
+    assert.equal(suppliedSql[1], 'SELECT id FROM accounts LIMIT 1 OFFSET 3');
+
+    for (const sql of [
+      'SELECT id FROM accounts',
+      'SELECT id FROM accounts LIMIT 101',
+      'SELECT id FROM accounts LIMIT 500 OFFSET 1',
+      'SELECT id FROM accounts LIMIT ?',
+    ]) {
+      const response = await client.request('tools/call', { name: 'execute_read_only_query', arguments: { sql, parameters: [] } });
+      assert.equal(response.result?.isError, true);
+      assert.equal(toolText(response), 'The query must be a single approved read-only SELECT statement.');
+    }
   } finally {
     await client.close();
   }
@@ -209,12 +221,30 @@ test('rejects responses above the JSON size limit without exposing result conten
   try {
     const response = await client.request('tools/call', {
       name: 'execute_read_only_query',
-      arguments: { sql: 'SELECT payload FROM documents', parameters: [] },
+      arguments: { sql: 'SELECT payload FROM documents LIMIT 1', parameters: [] },
     });
 
     assert.equal(response.result?.isError, true);
-    assert.equal(toolText(response), 'The query result exceeds the 1 MiB response limit. Refine the query and try again.');
+    assert.equal(toolText(response), 'The query result exceeds the 512 KiB response limit. Refine the query and try again.');
     assert.doesNotMatch(toolText(response), /xxxx/);
+  } finally {
+    await client.close();
+  }
+});
+
+test('accepts a serialized response just below the 512 KiB boundary', async () => {
+  const emptyResult = JSON.stringify({ columns: [{ name: 'payload', type: 'LONG_BLOB' }], rows: [{ payload: '' }] });
+  const payload = 'x'.repeat(MAX_QUERY_RESPONSE_BYTES - Buffer.byteLength(emptyResult, 'utf8') - 1024);
+  const application = createApplication(async () => [[{ payload }], [{ name: 'payload', typeName: 'LONG_BLOB' }]]);
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'execute_read_only_query',
+      arguments: { sql: 'SELECT payload FROM documents LIMIT 1', parameters: [] },
+    });
+
+    assert.equal(response.result?.isError, undefined);
   } finally {
     await client.close();
   }
@@ -229,12 +259,34 @@ test('sanitizes database query failures', async () => {
   try {
     const response = await client.request('tools/call', {
       name: 'execute_read_only_query',
-      arguments: { sql: 'SELECT id FROM accounts', parameters: [] },
+      arguments: { sql: 'SELECT id FROM accounts LIMIT 1', parameters: [] },
     });
 
     assert.equal(response.result?.isError, true);
     assert.match(toolText(response), /Unable to execute the query/);
     assert.doesNotMatch(toolText(response), /secret|query detail/);
+  } finally {
+    await client.close();
+  }
+});
+
+test('reports query timeouts without exposing driver details', async () => {
+  const application = createApplication(async () => {
+    const error = new Error('internal timeout detail') as Error & { code: string };
+    error.code = 'PROTOCOL_SEQUENCE_TIMEOUT';
+    throw error;
+  });
+  const client = await connect(application);
+
+  try {
+    const response = await client.request('tools/call', {
+      name: 'execute_read_only_query',
+      arguments: { sql: 'SELECT id FROM accounts LIMIT 1', parameters: [] },
+    });
+
+    assert.equal(response.result?.isError, true);
+    assert.equal(toolText(response), 'The query timed out. Reduce the result size or simplify the query and try again.');
+    assert.doesNotMatch(toolText(response), /internal timeout detail/);
   } finally {
     await client.close();
   }

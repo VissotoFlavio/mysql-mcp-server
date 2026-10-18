@@ -1,4 +1,4 @@
-import sqlParser, { type Select } from 'node-sql-parser';
+import sqlParser from 'node-sql-parser';
 
 const { Parser } = sqlParser;
 const parser = new Parser();
@@ -142,28 +142,27 @@ export function assertReadOnlySql(sql: string): void {
   }
 }
 
-function boundedLimit(limit: unknown, maximumRows: number): AstNode {
-  if (limit === null || limit === undefined) {
-    return { seperator: '', value: [{ type: 'number', value: maximumRows }] };
-  }
-
+function assertBoundedLimit(limit: unknown, maximumRows: number): void {
   if (!isAstNode(limit) || !Array.isArray(limit.value) || limit.value.length === 0) {
     throw new SqlPolicyError();
   }
 
   const values = limit.value;
-  const rowCount = values.at(-1);
-  if (!isAstNode(rowCount) || rowCount.type !== 'number' || typeof rowCount.value !== 'number' || !Number.isSafeInteger(rowCount.value)) {
+  const separator = limit.seperator;
+  const rowCount = separator === 'offset' ? values[0] : values.at(-1);
+  if (
+    !isAstNode(rowCount) ||
+    rowCount.type !== 'number' ||
+    typeof rowCount.value !== 'number' ||
+    !Number.isSafeInteger(rowCount.value) ||
+    rowCount.value < 0 ||
+    rowCount.value > maximumRows
+  ) {
     throw new SqlPolicyError();
   }
-
-  return {
-    ...limit,
-    value: [...values.slice(0, -1), { ...rowCount, value: Math.min(rowCount.value, maximumRows) }],
-  };
 }
 
-export function prepareBoundedSelectSql(sql: string, maximumRows: number): string {
+export function assertBoundedSelectSql(sql: string, maximumRows: number): void {
   if (!Number.isSafeInteger(maximumRows) || maximumRows < 1) {
     throw new TypeError('maximumRows must be a positive safe integer.');
   }
@@ -174,11 +173,7 @@ export function prepareBoundedSelectSql(sql: string, maximumRows: number): strin
   }
 
   try {
-    const boundedStatement = {
-      ...statement,
-      limit: boundedLimit(statement.limit, maximumRows),
-    } as unknown as Select;
-    return parser.sqlify(boundedStatement, { database: 'MySQL' });
+    assertBoundedLimit(statement.limit, maximumRows);
   } catch {
     throw new SqlPolicyError();
   }
