@@ -33,6 +33,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
           BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
           SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -80,7 +81,7 @@ jobs:
 
           prs_json="$(gh api --method GET "repos/${REPOSITORY}/pulls" \
             -f state=open \
-            -f head="${REPOSITORY}:${backport_branch}" \
+            -f head="${REPOSITORY_OWNER}:${backport_branch}" \
             -f per_page=100)"
           pr_count="$(jq 'length' <<<"$prs_json")"
 
@@ -135,6 +136,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.BACKPORT_TOKEN }}
           REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
           SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
           BACKPORT_BRANCH: ${{ steps.validate.outputs.backport_branch }}
@@ -158,7 +160,7 @@ jobs:
 
           prs_json="$(gh api --method GET "repos/${REPOSITORY}/pulls" \
             -f state=open \
-            -f head="${REPOSITORY}:${BACKPORT_BRANCH}" \
+            -f head="${REPOSITORY_OWNER}:${BACKPORT_BRANCH}" \
             -f per_page=100)"
           pr_count="$(jq 'length' <<<"$prs_json")"
 
