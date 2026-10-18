@@ -5,7 +5,7 @@
   "description": "Secure direct MySQL connection layer for an MCP server.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
