@@ -1,4 +1,4 @@
-import sqlParser from 'node-sql-parser';
+import sqlParser, { type Select } from 'node-sql-parser';
 
 const { Parser } = sqlParser;
 const parser = new Parser();
@@ -114,7 +114,7 @@ function isSafeStatement(statement: AstNode): boolean {
   return statement.type === 'explain' && isAstNode(statement.expr) && isSafeSelect(statement.expr);
 }
 
-export function assertReadOnlySql(sql: string): void {
+function parseStatement(sql: string): AstNode {
   if (typeof sql !== 'string' || sql.includes('/*!')) {
     throw new SqlPolicyError();
   }
@@ -129,7 +129,57 @@ export function assertReadOnlySql(sql: string): void {
   const statements = Array.isArray(ast) ? ast : [ast];
   const statement = statements[0];
 
-  if (statements.length !== 1 || !isAstNode(statement) || !isSafeStatement(statement)) {
+  if (statements.length !== 1 || !isAstNode(statement)) {
+    throw new SqlPolicyError();
+  }
+
+  return statement;
+}
+
+export function assertReadOnlySql(sql: string): void {
+  if (!isSafeStatement(parseStatement(sql))) {
+    throw new SqlPolicyError();
+  }
+}
+
+function boundedLimit(limit: unknown, maximumRows: number): AstNode {
+  if (limit === null || limit === undefined) {
+    return { seperator: '', value: [{ type: 'number', value: maximumRows }] };
+  }
+
+  if (!isAstNode(limit) || !Array.isArray(limit.value) || limit.value.length === 0) {
+    throw new SqlPolicyError();
+  }
+
+  const values = limit.value;
+  const rowCount = values.at(-1);
+  if (!isAstNode(rowCount) || rowCount.type !== 'number' || typeof rowCount.value !== 'number' || !Number.isSafeInteger(rowCount.value)) {
+    throw new SqlPolicyError();
+  }
+
+  return {
+    ...limit,
+    value: [...values.slice(0, -1), { ...rowCount, value: Math.min(rowCount.value, maximumRows) }],
+  };
+}
+
+export function prepareBoundedSelectSql(sql: string, maximumRows: number): string {
+  if (!Number.isSafeInteger(maximumRows) || maximumRows < 1) {
+    throw new TypeError('maximumRows must be a positive safe integer.');
+  }
+
+  const statement = parseStatement(sql);
+  if (!isSafeSelect(statement)) {
+    throw new SqlPolicyError();
+  }
+
+  try {
+    const boundedStatement = {
+      ...statement,
+      limit: boundedLimit(statement.limit, maximumRows),
+    } as unknown as Select;
+    return parser.sqlify(boundedStatement, { database: 'MySQL' });
+  } catch {
     throw new SqlPolicyError();
   }
 }

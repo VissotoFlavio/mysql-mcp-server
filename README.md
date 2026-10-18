@@ -2,7 +2,7 @@
 
 This repository provides the direct MySQL connection layer and local stdio MCP server. Configuration lives in `src/config.ts`, database pooling in `src/db/pool.ts`, and the MCP entry point is `src/server.ts`.
 
-The server creates one bounded pool and exposes only read-only metadata tools: `list_accessible_schemas`, `list_accessible_tables`, and `describe_table`. They use `information_schema`, return bounded deterministically ordered metadata, and reflect the configured account's effective access. The table-list tool requires a `schema` filter; `describe_table` requires validated `schema` and `table` identifiers and returns table or view metadata with up to 100 column descriptions. It does not expose arbitrary SQL, table rows, or HTTP hosting.
+The server creates one bounded pool and exposes read-only tools: `list_accessible_schemas`, `list_accessible_tables`, `describe_table`, and `execute_read_only_query`. The metadata tools use `information_schema`, return bounded deterministically ordered metadata, and reflect the configured account's effective access. The table-list tool requires a `schema` filter; `describe_table` requires validated `schema` and `table` identifiers and returns table or view metadata with up to 100 column descriptions. The query tool permits one policy-approved `SELECT` or read-only CTE, binds JSON scalar values through the driver, applies the configured query timeout, and returns no more than 100 rows or 1 MiB of JSON. It does not expose writes, unbounded exports, or HTTP hosting.
 
 ## Runtime configuration
 

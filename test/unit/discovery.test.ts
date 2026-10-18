@@ -518,6 +518,40 @@ test('advertises discovery tools as read-only with output schemas', async () => 
             },
           },
         },
+        {
+          name: 'execute_read_only_query',
+          readOnlyHint: true,
+          outputSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['columns', 'rows'],
+            properties: {
+              columns: {
+                type: 'array',
+                maxItems: 100,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['name', 'type'],
+                  properties: {
+                    name: { type: 'string' },
+                    type: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                  },
+                },
+              },
+              rows: {
+                type: 'array',
+                maxItems: 100,
+                items: {
+                  type: 'object',
+                  additionalProperties: {
+                    anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }],
+                  },
+                },
+              },
+            },
+          },
+        },
       ],
     );
   } finally {
