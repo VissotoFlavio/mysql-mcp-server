@@ -138,16 +138,3 @@ npm run test:integration
 ```
 
 For PowerShell, set the opt-in flag for the current session with `$env:MYSQL_INTEGRATION_TEST = 'true'`. In POSIX shells, prefix the command with `MYSQL_INTEGRATION_TEST=true`.
-
-## Issue #16 acceptance
-
-- A human operator can identify prerequisites, install from the lockfile, configure the local process without exposing secrets, and start the stdio server.
-- An AI-agent MCP client integrator can configure the generic local process contract, preserve stdout for MCP, and use the five tool contracts without reading source code.
-- The documented boundary, result limits, error behavior, and validation paths make the read-only and opt-in integration behavior explicit.
-
-## Issue #18 acceptance
-
-- The introduction explains the intended local stdio workflow and its read-only value before installation.
-- The use cases map generic prompts to each registered tool and keep "latest" queries ordered and bounded.
-- The security guidance distinguishes bounded output from database cost and names the remaining confidentiality and availability risks.
-- The public workflow transcript is synthetic, reproducible, and accompanied by its exact MCP test.
