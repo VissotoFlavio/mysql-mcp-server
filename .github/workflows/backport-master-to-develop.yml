@@ -1,0 +1,222 @@
+name: Backport merged releases and hotfixes
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - master
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: backport-${{ github.repository }}-${{ github.event.pull_request.merge_commit_sha || github.event.pull_request.id }}
+  cancel-in-progress: false
+
+jobs:
+  backport:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'master' &&
+      github.event.pull_request.base.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (startsWith(github.event.pull_request.head.ref, 'release/') ||
+      startsWith(github.event.pull_request.head.ref, 'hotfix/')) &&
+      github.event.pull_request.merge_commit_sha != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate source and existing backport
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ "$MERGED" != "true" || "$BASE_BRANCH" != "master" || "$BASE_REPOSITORY" != "$REPOSITORY" ]]; then
+            fail "The pull request was not a merged same-repository pull request targeting master."
+          fi
+
+          if [[ "$SOURCE_REPOSITORY" != "$REPOSITORY" ]]; then
+            fail "The pull request head must belong to this repository."
+          fi
+
+          if [[ ! "$MERGE_SHA" =~ ^[[:xdigit:]]{40}$ ]]; then
+            fail "The merged pull request does not provide a full merge commit SHA."
+          fi
+
+          if [[ ! "$SOURCE_BRANCH" =~ ^(release|hotfix)/([[:alnum:]][[:alnum:]_.-]*(/[[:alnum:]][[:alnum:]_.-]*)*)$ ]]; then
+            fail "The source branch must match release/* or hotfix/* with a valid version segment."
+          fi
+
+          source_type="${BASH_REMATCH[1]}"
+          version_segment="${BASH_REMATCH[2]}"
+
+          if [[ "$version_segment" == *..* || "$version_segment" == .* || "$version_segment" == *. ]]; then
+            fail "The source branch contains an invalid version segment."
+          fi
+
+          backport_branch="backport/${source_type}-${version_segment}"
+          branch_ref="refs/heads/${backport_branch}"
+
+          refs_json="$(gh api --method GET "repos/${REPOSITORY}/git/matching-refs/heads/${backport_branch}")"
+          branch_sha="$(jq -r --arg ref "$branch_ref" '.[] | select(.ref == $ref) | .object.sha' <<<"$refs_json")"
+
+          prs_json="$(gh api --method GET "repos/${REPOSITORY}/pulls" \
+            -f state=open \
+            -f head="${REPOSITORY_OWNER}:${backport_branch}" \
+            -f per_page=100)"
+          pr_count="$(jq 'length' <<<"$prs_json")"
+
+          if (( pr_count > 1 )); then
+            fail "More than one open backport pull request exists for ${backport_branch}."
+          fi
+
+          action="create_branch_and_pr"
+          existing_pr_url=""
+
+          if [[ -n "$branch_sha" && "$branch_sha" != "$MERGE_SHA" ]]; then
+            fail "The deterministic backport branch already points to a different commit."
+          fi
+
+          if (( pr_count == 1 )); then
+            pr_base="$(jq -r '.[0].base.ref' <<<"$prs_json")"
+            pr_head_sha="$(jq -r '.[0].head.sha' <<<"$prs_json")"
+            existing_pr_url="$(jq -r '.[0].html_url' <<<"$prs_json")"
+
+            if [[ -z "$branch_sha" ]]; then
+              fail "An open backport pull request exists but its deterministic branch is missing."
+            fi
+
+            if [[ "$pr_base" != "develop" || "$pr_head_sha" != "$MERGE_SHA" ]]; then
+              fail "The existing backport pull request does not represent the expected merge commit to develop."
+            fi
+
+            action="reuse"
+          elif [[ -n "$branch_sha" ]]; then
+            action="create_pr"
+          fi
+
+          {
+            echo "### Backport validation"
+            echo "- Source pull request: #${PULL_REQUEST_NUMBER}"
+            echo "- Source branch: \`${SOURCE_BRANCH}\`"
+            echo "- Merge commit: \`${MERGE_SHA}\`"
+            echo "- Backport branch: \`${backport_branch}\`"
+            echo "- Action: \`${action}\`"
+            if [[ -n "$existing_pr_url" ]]; then
+              echo "- Existing pull request: ${existing_pr_url}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
+          echo "backport_branch=${backport_branch}" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "existing_pr_url=${existing_pr_url}" >> "$GITHUB_OUTPUT"
+
+      - name: Create backport branch and pull request
+        if: steps.validate.outputs.action != 'reuse'
+        env:
+          GH_TOKEN: ${{ secrets.BACKPORT_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          BACKPORT_BRANCH: ${{ steps.validate.outputs.backport_branch }}
+          MERGE_SHA: ${{ steps.validate.outputs.merge_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            fail "The BACKPORT_TOKEN Actions secret is not configured."
+          fi
+
+          branch_ref="refs/heads/${BACKPORT_BRANCH}"
+          refs_json="$(gh api --method GET "repos/${REPOSITORY}/git/matching-refs/heads/${BACKPORT_BRANCH}")"
+          branch_sha="$(jq -r --arg ref "$branch_ref" '.[] | select(.ref == $ref) | .object.sha' <<<"$refs_json")"
+
+          prs_json="$(gh api --method GET "repos/${REPOSITORY}/pulls" \
+            -f state=open \
+            -f head="${REPOSITORY_OWNER}:${BACKPORT_BRANCH}" \
+            -f per_page=100)"
+          pr_count="$(jq 'length' <<<"$prs_json")"
+
+          if (( pr_count > 1 )); then
+            fail "More than one open backport pull request exists for ${BACKPORT_BRANCH}."
+          fi
+
+          if [[ -n "$branch_sha" && "$branch_sha" != "$MERGE_SHA" ]]; then
+            fail "The deterministic backport branch already points to a different commit."
+          fi
+
+          if (( pr_count == 1 )); then
+            pr_base="$(jq -r '.[0].base.ref' <<<"$prs_json")"
+            pr_head_sha="$(jq -r '.[0].head.sha' <<<"$prs_json")"
+            pr_url="$(jq -r '.[0].html_url' <<<"$prs_json")"
+
+            if [[ "$branch_sha" == "$MERGE_SHA" && "$pr_base" == "develop" && "$pr_head_sha" == "$MERGE_SHA" ]]; then
+              echo "Backport pull request already exists: ${pr_url}"
+              exit 0
+            fi
+
+            fail "An existing backport pull request does not represent the expected merge commit to develop."
+          fi
+
+          if [[ -z "$branch_sha" ]]; then
+            gh api --method POST "repos/${REPOSITORY}/git/refs" \
+              -f ref="$branch_ref" \
+              -f sha="$MERGE_SHA" >/dev/null
+          fi
+
+          title="chore: backport ${SOURCE_BRANCH} to develop"
+          body="$(cat <<EOF
+          ## Backport
+
+          This pull request reconciles the merged \`${SOURCE_BRANCH}\` change into \`develop\`.
+
+          - Source pull request: #${PULL_REQUEST_NUMBER}
+          - Source merge commit: \`${MERGE_SHA}\`
+          - Generated branch: \`${BACKPORT_BRANCH}\`
+
+          This pull request was created automatically by the backport workflow.
+          EOF
+          )"
+
+          pr_url="$(gh api --method POST "repos/${REPOSITORY}/pulls" \
+            -f title="$title" \
+            -f head="$BACKPORT_BRANCH" \
+            -f base=develop \
+            -f body="$body" \
+            --jq '.html_url')"
+
+          if [[ -z "$pr_url" ]]; then
+            fail "GitHub did not return the created backport pull request URL."
+          fi
+
+          {
+            echo "### Backport pull request"
+            echo "Created: ${pr_url}"
+          } >> "$GITHUB_STEP_SUMMARY"
