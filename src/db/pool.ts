@@ -5,7 +5,7 @@ import { loadConnectionConfig, type ConnectionConfig, type Environment, type Rea
 import { assertReadOnlySql } from './sql-policy.js';
 
 export class ConnectionError extends Error {
-  readonly code = 'MYSQL_CONNECTION_FAILED';
+  readonly code: string = 'MYSQL_CONNECTION_FAILED';
 
   constructor(message: string) {
     super(message);
@@ -13,8 +13,26 @@ export class ConnectionError extends Error {
   }
 }
 
+export class QueryTimeoutError extends ConnectionError {
+  readonly code = 'MYSQL_QUERY_TIMEOUT';
+
+  constructor() {
+    super('MySQL query timed out.');
+    this.name = 'QueryTimeoutError';
+  }
+}
+
 export interface PoolFactory {
   createPool(options: PoolOptions): Pool;
+}
+
+function isQueryTimeout(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    ((error as { code?: unknown }).code === 'PROTOCOL_SEQUENCE_TIMEOUT' || (error as { code?: unknown }).code === 'ETIMEDOUT')
+  );
 }
 
 export interface ConnectionLayer {
@@ -80,7 +98,11 @@ export function createConnectionLayer({
 
       try {
         return await pool.query<T>(options, values);
-      } catch {
+      } catch (error) {
+        if (isQueryTimeout(error)) {
+          throw new QueryTimeoutError();
+        }
+
         throw new ConnectionError('Unable to execute the read-only query.');
       }
     },

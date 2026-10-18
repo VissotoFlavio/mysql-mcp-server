@@ -8,6 +8,7 @@ import { type Environment, type ReadFile } from './config.js';
 import { createConnectionLayer, type ConnectionLayer, type PoolFactory } from './db/pool.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
+import { registerReadOnlyQueryTool } from './tools/query.js';
 
 const SERVER_INFO = Object.freeze({
   name: 'mysql-mcp-server',
@@ -31,6 +32,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   const server = new McpServer(SERVER_INFO);
   registerDiscoveryTools(server, mysql);
   registerDescribeTableTool(server, mysql);
+  registerReadOnlyQueryTool(server, mysql);
 
   return Object.freeze({
     mysql,

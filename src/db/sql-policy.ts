@@ -114,7 +114,7 @@ function isSafeStatement(statement: AstNode): boolean {
   return statement.type === 'explain' && isAstNode(statement.expr) && isSafeSelect(statement.expr);
 }
 
-export function assertReadOnlySql(sql: string): void {
+function parseStatement(sql: string): AstNode {
   if (typeof sql !== 'string' || sql.includes('/*!')) {
     throw new SqlPolicyError();
   }
@@ -129,7 +129,52 @@ export function assertReadOnlySql(sql: string): void {
   const statements = Array.isArray(ast) ? ast : [ast];
   const statement = statements[0];
 
-  if (statements.length !== 1 || !isAstNode(statement) || !isSafeStatement(statement)) {
+  if (statements.length !== 1 || !isAstNode(statement)) {
+    throw new SqlPolicyError();
+  }
+
+  return statement;
+}
+
+export function assertReadOnlySql(sql: string): void {
+  if (!isSafeStatement(parseStatement(sql))) {
+    throw new SqlPolicyError();
+  }
+}
+
+function assertBoundedLimit(limit: unknown, maximumRows: number): void {
+  if (!isAstNode(limit) || !Array.isArray(limit.value) || limit.value.length === 0) {
+    throw new SqlPolicyError();
+  }
+
+  const values = limit.value;
+  const separator = limit.seperator;
+  const rowCount = separator === 'offset' ? values[0] : values.at(-1);
+  if (
+    !isAstNode(rowCount) ||
+    rowCount.type !== 'number' ||
+    typeof rowCount.value !== 'number' ||
+    !Number.isSafeInteger(rowCount.value) ||
+    rowCount.value < 0 ||
+    rowCount.value > maximumRows
+  ) {
+    throw new SqlPolicyError();
+  }
+}
+
+export function assertBoundedSelectSql(sql: string, maximumRows: number): void {
+  if (!Number.isSafeInteger(maximumRows) || maximumRows < 1) {
+    throw new TypeError('maximumRows must be a positive safe integer.');
+  }
+
+  const statement = parseStatement(sql);
+  if (!isSafeSelect(statement)) {
+    throw new SqlPolicyError();
+  }
+
+  try {
+    assertBoundedLimit(statement.limit, maximumRows);
+  } catch {
     throw new SqlPolicyError();
   }
 }
