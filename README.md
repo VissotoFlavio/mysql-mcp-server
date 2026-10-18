@@ -4,6 +4,30 @@
 
 Use it with a dedicated MySQL account that has only the minimum read permissions required. The server neither grants nor elevates database permissions.
 
+## Why this exists
+
+When a developer is investigating a legacy or unfamiliar MySQL database, an AI agent needs accurate context before it can help. Manually copying schema details into a conversation is slow, becomes stale, and can expose more information than necessary.
+
+This server lets a locally connected agent inspect metadata visible to its configured account, run one bounded read-only query at a time, and request an `EXPLAIN` plan for that query. The agent can build context from permitted tool results instead of a manually maintained database dump. It does not infer relationships that the available schemas, tables, column metadata, query results, or plans do not expose.
+
+## Use cases
+
+Use the registered tools to turn focused natural-language questions into a read-only exploration workflow:
+
+| Developer prompt                                                            | Tool                      | Example request                                                                                                                                 |
+| --------------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Which schemas can I inspect with this account?"                            | `list_accessible_schemas` | List the schemas visible to the configured MySQL account.                                                                                       |
+| "What tables and views are available in `example_catalog`?"                 | `list_accessible_tables`  | Send `{ "schema": "example_catalog" }`.                                                                                                         |
+| "Describe the columns and keys in `example_catalog.sample_records`."        | `describe_table`          | Send `{ "schema": "example_catalog", "table": "sample_records" }`.                                                                              |
+| "Show the five latest permitted records, breaking ties by the primary key." | `execute_read_only_query` | Send `SELECT record_id, created_at FROM example_catalog.sample_records ORDER BY created_at DESC, record_id DESC LIMIT 5` with `parameters: []`. |
+| "Before running that bounded query, how will MySQL plan it?"                | `explain_read_only_query` | Send the same policy-approved `SELECT` and parameters; do not prepend `EXPLAIN`.                                                                |
+
+The identifiers in these prompts are illustrative. Use only objects visible to the configured account, bind values through `parameters`, and include a literal `LIMIT` from 0 through 100 in every query. A prompt asking for the "latest" records must specify a deterministic `ORDER BY` and a literal limit, as in the example above.
+
+## Sanitized workflow demo
+
+The [sanitized MCP workflow transcript](docs/sanitized-workflow-demo.md) shows metadata discovery, object description, a bounded query, and plan inspection in sequence. It is backed by a reproducible in-memory MCP test that uses only synthetic data; no database connection, credential, hostname, certificate, internal identifier, or production query result is present.
+
 ## What you need
 
 - Node.js 22 or later and npm.
@@ -83,6 +107,20 @@ For both query tools, the SQL must be one policy-approved `SELECT` or read-only 
 
 This is not a general SQL administration channel. The query and plan tools reject writes, DDL, administrative statements, multiple statements, unsafe `SELECT` forms, locking reads, and `EXPLAIN ANALYZE`. Multiple statements are also disabled in the MySQL driver. Metadata operations query `information_schema` only. No tool provides data mutation, schema changes, permission changes, unbounded export, HTTP hosting, or credential management.
 
+## Security considerations
+
+The read-only policy is defense in depth. It is not a replacement for authorization, data classification, network isolation, auditing, monitoring, or an access-review process. The database account remains the authority for what the server can see.
+
+An allowed `SELECT` can still reveal sensitive information and consume database resources. The required `LIMIT` bounds returned rows, not the rows that MySQL must scan or the query's execution cost. This server does not provide data masking, relationship inference, query-cost enforcement, or a guarantee that a workload is suitable for production.
+
+Operate it with the following safeguards:
+
+- Use a dedicated least-privilege account that can reach only the intended schemas and objects.
+- Restrict database and network access to the local client and approved database endpoints.
+- Prefer non-production or masked data when that is appropriate for the task.
+- Audit and monitor the account and database activity.
+- Configure a practical `MYSQL_QUERY_TIMEOUT_MS` for the environment and still review query shape before running it.
+
 ## Validation
 
 Run the local checks that do not require a database or credentials:
@@ -106,3 +144,10 @@ For PowerShell, set the opt-in flag for the current session with `$env:MYSQL_INT
 - A human operator can identify prerequisites, install from the lockfile, configure the local process without exposing secrets, and start the stdio server.
 - An AI-agent MCP client integrator can configure the generic local process contract, preserve stdout for MCP, and use the five tool contracts without reading source code.
 - The documented boundary, result limits, error behavior, and validation paths make the read-only and opt-in integration behavior explicit.
+
+## Issue #18 acceptance
+
+- The introduction explains the intended local stdio workflow and its read-only value before installation.
+- The use cases map generic prompts to each registered tool and keep "latest" queries ordered and bounded.
+- The security guidance distinguishes bounded output from database cost and names the remaining confidentiality and availability risks.
+- The public workflow transcript is synthetic, reproducible, and accompanied by its exact MCP test.
