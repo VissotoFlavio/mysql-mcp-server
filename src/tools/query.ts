@@ -19,6 +19,14 @@ type QueryInput = Readonly<{ sql: string; parameters: readonly QueryValue[] }>;
 type QueryColumn = Readonly<{ name: string; type: string | null }>;
 type QueryRow = Readonly<Record<string, QueryValue>>;
 type QueryResult = Readonly<{ columns: readonly QueryColumn[]; rows: readonly QueryRow[] }>;
+type BoundedSelectToolMode = 'execute' | 'explain';
+type BoundedSelectToolDefinition = Readonly<{
+  name: string;
+  title: string;
+  description: string;
+  mode: BoundedSelectToolMode;
+  executionFailureMessage: string;
+}>;
 
 class QueryResponseLimitError extends Error {
   constructor() {
@@ -239,13 +247,12 @@ function queryResult(result: QueryResult, serialized: string) {
   };
 }
 
-export function registerReadOnlyQueryTool(server: McpServer, mysql: ConnectionLayer): void {
+export function registerBoundedSelectTool(server: McpServer, mysql: ConnectionLayer, definition: BoundedSelectToolDefinition): void {
   server.registerTool(
-    'execute_read_only_query',
+    definition.name,
     {
-      title: 'Execute a bounded read-only query',
-      description:
-        'Executes one approved SELECT query with driver-bound parameters, a configured timeout, and bounded results. This tool is read-only.',
+      title: definition.title,
+      description: definition.description,
       inputSchema: queryInputSchema,
       outputSchema: queryOutputSchema,
       annotations: { readOnlyHint: true },
@@ -253,7 +260,8 @@ export function registerReadOnlyQueryTool(server: McpServer, mysql: ConnectionLa
     async ({ sql, parameters }) => {
       try {
         assertBoundedSelectSql(sql, MAX_QUERY_RESULTS);
-        const [rows, fields] = await mysql.query<RowDataPacket[]>({ ...mysql.queryOptions(), sql }, [...parameters]);
+        const driverSql = definition.mode === 'explain' ? `EXPLAIN ${sql}` : sql;
+        const [rows, fields] = await mysql.query<RowDataPacket[]>({ ...mysql.queryOptions(), sql: driverSql }, [...parameters]);
         const result = toQueryResult(rows, fields);
         return queryResult(result, serializeQueryResult(result));
       } catch (error) {
@@ -269,8 +277,19 @@ export function registerReadOnlyQueryTool(server: McpServer, mysql: ConnectionLa
           return errorResult('The query timed out. Reduce the result size or simplify the query and try again.');
         }
 
-        return errorResult('Unable to execute the query. Verify the configured MySQL connection and query parameters.');
+        return errorResult(definition.executionFailureMessage);
       }
     },
   );
+}
+
+export function registerReadOnlyQueryTool(server: McpServer, mysql: ConnectionLayer): void {
+  registerBoundedSelectTool(server, mysql, {
+    name: 'execute_read_only_query',
+    title: 'Execute a bounded read-only query',
+    description:
+      'Executes one approved SELECT query with driver-bound parameters, a configured timeout, and bounded results. This tool is read-only.',
+    mode: 'execute',
+    executionFailureMessage: 'Unable to execute the query. Verify the configured MySQL connection and query parameters.',
+  });
 }
