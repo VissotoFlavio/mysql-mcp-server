@@ -25,6 +25,7 @@ export interface ConnectionConfig {
   readonly database: string;
   readonly user: string;
   readonly password: string;
+  readonly dmlEnabled: boolean;
   readonly poolLimit: number;
   readonly queueLimit: number;
   readonly connectTimeoutMs: number;
@@ -191,6 +192,7 @@ export function loadConnectionConfig(
     database: validateIdentifier(requiredValue(environment, 'MYSQL_DATABASE'), 'MYSQL_DATABASE'),
     user: validateIdentifier(requiredValue(environment, 'MYSQL_USER'), 'MYSQL_USER'),
     password: requiredValue(environment, 'MYSQL_PASSWORD', true),
+    dmlEnabled: booleanValue(environment, 'MYSQL_DML_ENABLED', false),
     poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
     queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),
     connectTimeoutMs: integerValue(environment, 'MYSQL_CONNECT_TIMEOUT_MS', DEFAULTS.connectTimeoutMs, { min: 100, max: 60_000 }),
