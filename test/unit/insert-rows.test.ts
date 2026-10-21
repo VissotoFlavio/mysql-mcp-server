@@ -207,10 +207,17 @@ test('advertises insert_rows input limits, patterns, and scalar constraints', as
       assert.equal(properties[field].pattern, '^(?![\\s\\S]*[\\p{Cc}\\p{Cf}\\u2028\\u2029])');
     }
     assert.equal(properties.reason.maxLength, MAX_DML_REASON_LENGTH);
-    assert.equal(properties.reason.pattern, properties.schema.pattern);
+    assert.equal(properties.reason.pattern, '^(?=.*\\S)(?![\\s\\S]*[\\p{Cc}\\p{Cf}\\u2028\\u2029])');
     assert.equal(properties.rows.maxItems, MAX_DML_ROWS);
     assert.equal(rowItems.maxProperties, MAX_DML_COLUMNS);
+    assert.deepEqual(rowItems.propertyNames, {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_DML_IDENTIFIER_LENGTH,
+      pattern: properties.schema.pattern,
+    });
     assert.equal(scalarAlternatives[0]?.maxLength, MAX_DML_STRING_LENGTH);
+    assert.equal(scalarAlternatives[0]?.pattern, properties.schema.pattern);
     assert.deepEqual(scalarAlternatives[2], { type: 'integer', minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER });
   } finally {
     await client.close();

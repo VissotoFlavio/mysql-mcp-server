@@ -46,17 +46,17 @@ type InsertRowsError = Readonly<{
   retryAdvice?: string;
 }>;
 
+const noControlCharactersJsonSchemaPattern = '^(?![\\s\\S]*[\\p{Cc}\\p{Cf}\\u2028\\u2029])';
+
 const scalarJsonSchema = {
   anyOf: [
-    { type: 'string', maxLength: MAX_DML_STRING_LENGTH },
+    { type: 'string', maxLength: MAX_DML_STRING_LENGTH, pattern: noControlCharactersJsonSchemaPattern },
     { type: 'number', not: { type: 'integer' } },
     { type: 'integer', minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
     { type: 'boolean' },
     { type: 'null' },
   ],
 };
-
-const noControlCharactersJsonSchemaPattern = '^(?![\\s\\S]*[\\p{Cc}\\p{Cf}\\u2028\\u2029])';
 
 const insertRowsInputSchema: StandardSchemaWithJSON<InsertRowsInput> = {
   '~standard': {
@@ -122,10 +122,21 @@ function insertRowsInputJsonSchema(): Record<string, unknown> {
           type: 'object',
           minProperties: 1,
           maxProperties: MAX_DML_COLUMNS,
+          propertyNames: {
+            type: 'string',
+            minLength: 1,
+            maxLength: MAX_DML_IDENTIFIER_LENGTH,
+            pattern: noControlCharactersJsonSchemaPattern,
+          },
           additionalProperties: scalarJsonSchema,
         },
       },
-      reason: { type: 'string', minLength: 1, maxLength: MAX_DML_REASON_LENGTH, pattern: noControlCharactersJsonSchemaPattern },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: MAX_DML_REASON_LENGTH,
+        pattern: `^(?=.*\\S)${noControlCharactersJsonSchemaPattern.slice(1)}`,
+      },
     },
   };
 }
