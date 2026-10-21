@@ -3,12 +3,14 @@ import test from 'node:test';
 
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 
+import { toSafeDmlOutcome } from '../../src/db/dml-audit.js';
 import {
   ConnectionError,
   createAuditedDmlStatement,
   createConnectionLayer,
   DmlDisabledError,
   type ConnectionLayer,
+  wasDmlSubmitted,
   verifyConnection,
 } from '../../src/db/pool.js';
 import { DmlPolicyError, SqlPolicyError } from '../../src/db/sql-policy.js';
@@ -132,6 +134,161 @@ test('executes DML through the prepared internal path without read-only validati
   assert.deepEqual(receivedOptions, { sql: 'UPDATE `app`.`accounts` SET `role` = ? WHERE `id` = ? ORDER BY `id` ASC LIMIT 1', timeout: 30_000 });
   assert.deepEqual(receivedValues, ['admin', 1]);
 });
+
+test('keeps the legacy DML tuple and exposes operation ids through the separate execution method', async () => {
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            return [{ affectedRows: 1 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const statement = auditedUpdate();
+
+  const legacyResult = await layer.dml.executeDml(statement);
+  const extendedResult = await layer.dml.executeDmlWithOperationId(statement);
+  assert.equal(legacyResult.length, 2);
+  assert.equal(extendedResult.length, 3);
+  assert.equal(typeof extendedResult[2], 'string');
+  await layer.close();
+});
+
+test('does not log malformed post-execute INSERT metadata as succeeded', async () => {
+  const lines: string[] = [];
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    dmlAuditWriter: (line) => lines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            return [{ affectedRows: 'invalid', warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const statement = createAuditedDmlStatement('insert', {
+    target: { schema: 'app', table: 'accounts', reason: 'controlled insert' },
+    columns: ['name'],
+    rows: [{ name: 'not-logged' }],
+  });
+
+  await assert.rejects(
+    () => layer.dml.executeDmlWithOperationId(statement),
+    (error: unknown) => {
+      assert.equal(toSafeDmlOutcome(error, true).code, 'MYSQL_DML_OUTCOME_UNKNOWN');
+      return true;
+    },
+  );
+  const completed = JSON.parse(lines.at(-1) as string) as { result: string; code: string };
+  assert.equal(completed.result, 'indeterminate');
+  assert.equal(completed.code, 'MYSQL_DML_OUTCOME_UNKNOWN');
+  await layer.close();
+});
+
+test('sanitizes hostile proxy errors without leaking raw traps', async () => {
+  const lines: string[] = [];
+  const hostile = new Proxy(new Error('proxy-secret'), {
+    getPrototypeOf() {
+      throw new Error('proxy-trap-secret');
+    },
+  });
+  assert.equal(wasDmlSubmitted(hostile), false);
+
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    dmlAuditWriter: (line) => lines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            throw hostile;
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => layer.dml.executeDmlWithOperationId(auditedUpdate()),
+    (error: unknown) => {
+      assert.equal((error as { code: string }).code, 'MYSQL_CONNECTION_FAILED');
+      assert.equal((error as { message: string }).message, 'Unable to execute the DML statement.');
+      return true;
+    },
+  );
+  const completed = JSON.parse(lines.at(-1) as string) as { result: string; code: string };
+  assert.equal(completed.result, 'failed');
+  assert.equal(completed.code, 'MYSQL_DML_FAILED');
+  assert.doesNotMatch(lines.join('\n'), /proxy-secret|proxy-trap-secret/);
+  await layer.close();
+});
+
+for (const invalidInsertId of [
+  { label: 'secret string', value: 'insert-id-secret' },
+  { label: 'malformed string', value: '01' },
+  { label: 'negative number', value: -1 },
+  { label: 'decimal number', value: 1.5 },
+  { label: 'oversized bigint', value: 18446744073709551616n },
+  { label: 'object', value: { value: 'insert-id-secret' } },
+] as const) {
+  test(`classifies ${invalidInsertId.label} INSERT metadata as indeterminate`, async () => {
+    const lines: string[] = [];
+    const layer = createConnectionLayer({
+      environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+      dmlAuditWriter: (line) => lines.push(line),
+      driver: {
+        createPool() {
+          return {
+            async query() {
+              return [[]];
+            },
+            async execute() {
+              return [{ affectedRows: 1, insertId: invalidInsertId.value, warningStatus: 0 }, []];
+            },
+            async end() {},
+          } as never;
+        },
+      },
+    });
+    const statement = createAuditedDmlStatement('insert', {
+      target: { schema: 'app', table: 'accounts', reason: 'controlled insert' },
+      columns: ['name'],
+      rows: [{ name: 'insert-id-row-secret' }],
+    });
+
+    await assert.rejects(
+      () => layer.dml.executeDmlWithOperationId(statement),
+      (error: unknown) => {
+        assert.equal(toSafeDmlOutcome(error, true).code, 'MYSQL_DML_OUTCOME_UNKNOWN');
+        return true;
+      },
+    );
+    const completed = JSON.parse(lines.at(-1) as string) as { result: string; code: string };
+    assert.equal(completed.result, 'indeterminate');
+    assert.equal(completed.code, 'MYSQL_DML_OUTCOME_UNKNOWN');
+    assert.doesNotMatch(lines.join('\n'), /insert-id-secret|insert-id-row-secret/);
+    await layer.close();
+  });
+}
 
 test('preserves large DML result identifiers as strings', async () => {
   const largeInsertId = '9007199254740993';

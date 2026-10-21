@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [#33 — feat: add controlled insert_rows tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/33)
 - [#31 — feat: add sanitized audit logging and safe errors](https://github.com/VissotoFlavio/mysql-mcp-server/issues/31)
 - [#28 — feat: add structured filters with safe SQL generation](https://github.com/VissotoFlavio/mysql-mcp-server/issues/28)
 

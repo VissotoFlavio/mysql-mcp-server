@@ -138,6 +138,10 @@ export interface DmlTableMetadata {
   readonly primaryKey: readonly string[];
 }
 
+export interface DmlMetadataOptions {
+  readonly operation?: 'insert' | 'update' | 'delete';
+}
+
 export class DmlMetadataError extends Error {
   readonly code = 'MYSQL_DML_METADATA_INVALID';
 
@@ -201,6 +205,7 @@ export async function validateDmlMetadata(
   schema: string,
   table: string,
   suppliedColumns: readonly string[] = [],
+  options: DmlMetadataOptions = {},
 ): Promise<DmlTableMetadata> {
   let rows: DmlMetadataRow[];
   let primaryKeyRows: DmlPrimaryKeyRow[];
@@ -305,9 +310,16 @@ export async function validateDmlMetadata(
   }
 
   const columnPrimaryKeyNames = new Set(columns.filter(({ columnKey }) => columnKey === 'PRI').map(({ columnName }) => columnName));
-  if (
-    primaryKeyNames.size === 0 ||
-    columnPrimaryKeyNames.size !== primaryKeyNames.size ||
+  if (options.operation !== 'insert') {
+    if (
+      primaryKeyNames.size === 0 ||
+      columnPrimaryKeyNames.size !== primaryKeyNames.size ||
+      [...columnPrimaryKeyNames].some((columnName) => !primaryKeyNames.has(columnName))
+    ) {
+      throw new DmlMetadataError(DML_METADATA_UNAVAILABLE);
+    }
+  } else if (
+    primaryKeyNames.size !== columnPrimaryKeyNames.size ||
     [...columnPrimaryKeyNames].some((columnName) => !primaryKeyNames.has(columnName))
   ) {
     throw new DmlMetadataError(DML_METADATA_UNAVAILABLE);

@@ -86,6 +86,16 @@ test('returns primary-key constraint order and full column metadata for each ope
   assert.doesNotMatch(calls.sqls[0], /IS_GENERATED|IS_VISIBLE/);
 });
 
+test('allows insert metadata validation without a primary key while preserving the default requirement', async () => {
+  const columns = [column({ columnKey: '', extra: '' }), column({ columnName: 'value', ordinalPosition: 2, columnKey: '', extra: '' })];
+  const mysql = metadataLayer(columns, []);
+
+  await assert.rejects(validateDmlMetadata(mysql, 'app', 'orders', ['value']), /Unable to validate the requested table metadata/);
+  const metadata = await validateDmlMetadata(mysql, 'app', 'orders', ['value'], { operation: 'insert' });
+  assert.deepEqual(metadata.primaryKey, []);
+  assert.equal(metadata.columns.length, 2);
+});
+
 test('rejects metadata beyond the DML column ceiling', async () => {
   const columns = Array.from({ length: 101 }, (_, index) =>
     column({

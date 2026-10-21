@@ -15,6 +15,11 @@ export type DmlTarget = Readonly<{
   table: string;
   reason: string;
 }>;
+export type DmlInsertInput = Readonly<{
+  target: DmlTarget;
+  rows: readonly DmlRow[];
+  columns: readonly string[];
+}>;
 
 export type DmlValidationCode =
   | 'additional_property'
@@ -229,8 +234,93 @@ export function normalizeDmlReason(value: unknown, path = 'reason'): string {
   return normalized;
 }
 
-function createJsonSnapshot(value: unknown, path: string, activeObjects: WeakSet<object>, depth = 0): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+function utf8Bytes(codePoint: number): number {
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint <= 0x7ff) return 2;
+  if (codePoint <= 0xffff) return 3;
+  return 4;
+}
+
+class JsonPayloadBudget {
+  private totalBytes = 0;
+
+  get bytes(): number {
+    return this.totalBytes;
+  }
+
+  reserve(bytes: number, path: string): void {
+    this.totalBytes += bytes;
+    if (this.totalBytes > MAX_DML_PAYLOAD_BYTES) {
+      fail('payload_too_large', containerPath(path));
+    }
+  }
+
+  reserveJsonString(value: string, path: string): void {
+    this.reserve(1, path);
+    for (let index = 0; index < value.length; index += 1) {
+      const codeUnit = value.charCodeAt(index);
+      if (
+        codeUnit === 0x22 ||
+        codeUnit === 0x5c ||
+        codeUnit === 0x08 ||
+        codeUnit === 0x09 ||
+        codeUnit === 0x0a ||
+        codeUnit === 0x0c ||
+        codeUnit === 0x0d
+      ) {
+        this.reserve(2, path);
+        continue;
+      }
+
+      if (codeUnit < 0x20) {
+        this.reserve(6, path);
+        continue;
+      }
+
+      if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        const next = value.charCodeAt(index + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          this.reserve(4, path);
+          index += 1;
+          continue;
+        }
+
+        this.reserve(6, path);
+        continue;
+      }
+
+      if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+        this.reserve(6, path);
+        continue;
+      }
+
+      this.reserve(utf8Bytes(codeUnit), path);
+    }
+    this.reserve(1, path);
+  }
+
+  reserveJsonNumber(value: number, path: string): void {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      fail('invalid_payload', containerPath(path));
+    }
+    this.reserve(new TextEncoder().encode(serialized).byteLength, path);
+  }
+}
+
+function createJsonSnapshot(value: unknown, path: string, activeObjects: WeakSet<object>, budget: JsonPayloadBudget, depth = 0): unknown {
+  if (value === null) {
+    budget.reserve(4, path);
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    budget.reserveJsonString(value, path);
+    return value;
+  }
+
+  if (typeof value === 'boolean') {
+    budget.reserve(value ? 4 : 5, path);
     return value;
   }
 
@@ -239,6 +329,7 @@ function createJsonSnapshot(value: unknown, path: string, activeObjects: WeakSet
       fail('invalid_payload', containerPath(path));
     }
 
+    budget.reserveJsonNumber(value, path);
     return value;
   }
 
@@ -263,13 +354,13 @@ function createJsonSnapshot(value: unknown, path: string, activeObjects: WeakSet
         fail('invalid_payload', containerPath(path));
       }
 
-      return createJsonArraySnapshot(value, path, activeObjects, depth);
+      return createJsonArraySnapshot(value, path, activeObjects, budget, depth);
     } else {
       if ((prototype !== Object.prototype && prototype !== null) || Object.hasOwn(Object.prototype, 'toJSON')) {
         fail('invalid_payload', containerPath(path));
       }
 
-      return createJsonObjectSnapshot(value, path, activeObjects, depth);
+      return createJsonObjectSnapshot(value, path, activeObjects, budget, depth);
     }
   } finally {
     activeObjects.delete(value);
@@ -284,25 +375,40 @@ function jsonValueDescriptor(descriptor: PropertyDescriptor | undefined, path: s
   return descriptor as PropertyDescriptor & { value: unknown };
 }
 
-function createJsonObjectSnapshot(value: object, path: string, activeObjects: WeakSet<object>, depth: number): Record<string, unknown> {
+function createJsonObjectSnapshot(
+  value: object,
+  path: string,
+  activeObjects: WeakSet<object>,
+  budget: JsonPayloadBudget,
+  depth: number,
+): Record<string, unknown> {
   const snapshot = Object.create(null) as Record<string, unknown>;
+  budget.reserve(1, path);
+  let propertyCount = 0;
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== 'string') {
       fail('invalid_payload', containerPath(path));
     }
 
-    const descriptor = jsonValueDescriptor(Object.getOwnPropertyDescriptor(value, key), path);
     if (key === 'toJSON') {
       fail('invalid_payload', containerPath(path));
     }
 
+    if (propertyCount > 0) budget.reserve(1, path);
+    budget.reserveJsonString(key, path);
+    budget.reserve(1, path);
+    const descriptor = jsonValueDescriptor(Object.getOwnPropertyDescriptor(value, key), path);
+
     Object.defineProperty(snapshot, key, {
       configurable: true,
       enumerable: true,
-      value: createJsonSnapshot(descriptor.value, path, activeObjects, depth + 1),
+      value: createJsonSnapshot(descriptor.value, path, activeObjects, budget, depth + 1),
       writable: true,
     });
+    propertyCount += 1;
   }
+
+  budget.reserve(1, path);
 
   return snapshot;
 }
@@ -312,7 +418,7 @@ function arrayIndex(key: string): number | undefined {
   return Number.isInteger(index) && index >= 0 && index < 4_294_967_295 && String(index) === key ? index : undefined;
 }
 
-function createJsonArraySnapshot(value: object, path: string, activeObjects: WeakSet<object>, depth: number): unknown[] {
+function createJsonArraySnapshot(value: object, path: string, activeObjects: WeakSet<object>, budget: JsonPayloadBudget, depth: number): unknown[] {
   const ownKeys = Reflect.ownKeys(value);
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
   if (
@@ -329,6 +435,7 @@ function createJsonArraySnapshot(value: object, path: string, activeObjects: Wea
   const arrayLength = lengthDescriptor.value;
   const snapshot: unknown[] = [];
   Object.setPrototypeOf(snapshot, null);
+  budget.reserve(1, path);
 
   for (const key of ownKeys) {
     const index = typeof key === 'string' ? arrayIndex(key) : undefined;
@@ -344,13 +451,15 @@ function createJsonArraySnapshot(value: object, path: string, activeObjects: Wea
     }
 
     const safeDescriptor = jsonValueDescriptor(descriptor, path);
-    snapshot[index] = createJsonSnapshot(safeDescriptor.value, path, activeObjects, depth + 1);
+    if (index > 0) budget.reserve(1, path);
+    snapshot[index] = createJsonSnapshot(safeDescriptor.value, path, activeObjects, budget, depth + 1);
   }
 
   if (snapshot.length !== arrayLength) {
     fail('sparse_array', containerPath(path));
   }
 
+  budget.reserve(1, path);
   return snapshot;
 }
 
@@ -392,7 +501,8 @@ function payloadSnapshot(value: unknown, path: string): Readonly<{ value: unknow
   const hookState = captureSerializationHookState();
 
   try {
-    const snapshot = createJsonSnapshot(value, safePath, new WeakSet<object>());
+    const budget = new JsonPayloadBudget();
+    const snapshot = createJsonSnapshot(value, safePath, new WeakSet<object>(), budget);
     assertStructuredCloneable(value, safePath);
     const serialized = JSON.stringify(snapshot);
     if (serialized === undefined) {
@@ -548,9 +658,14 @@ function normalizeDmlRowWithoutPayloadCheck(value: unknown, path: string): DmlRo
 export function normalizeDmlRows(value: unknown, path = 'rows'): readonly DmlRow[] {
   const safePath = containerPath(path);
   const payload = payloadSnapshot(value, safePath);
-  assertDenseArray(payload.value, safePath);
+  return normalizeDmlRowsSnapshot(payload.value, safePath);
+}
 
-  const rows = Array.prototype.map.call(payload.value, (row: unknown, index: number) =>
+function normalizeDmlRowsSnapshot(value: unknown, path: string): readonly DmlRow[] {
+  const safePath = containerPath(path);
+  assertDenseArray(value, safePath);
+
+  const rows = Array.prototype.map.call(value, (row: unknown, index: number) =>
     normalizeDmlRowWithoutPayloadCheck(row, indexPath(safePath, index)),
   ) as DmlRow[];
   if (rows.length === 0 || rows.length > MAX_DML_ROWS) {
@@ -584,6 +699,66 @@ export function normalizeDmlTarget(value: unknown, path = ''): DmlTarget {
     table: normalizeDmlIdentifier((payload.value as Record<string, unknown>).table, propertyPath(safePath, 'table')),
     reason: normalizeDmlReason((payload.value as Record<string, unknown>).reason, propertyPath(safePath, 'reason')),
   };
+}
+
+function precheckInsertRowsCardinality(value: unknown): void {
+  if (!isPlainRecord(value)) {
+    return;
+  }
+
+  let hasRows: boolean;
+  try {
+    hasRows = Object.hasOwn(value, 'rows');
+  } catch {
+    fail('invalid_payload', 'input');
+  }
+
+  if (!hasRows) {
+    return;
+  }
+
+  let rows: unknown;
+  try {
+    rows = value.rows;
+  } catch {
+    fail('invalid_payload', 'rows');
+  }
+
+  if (!Array.isArray(rows)) {
+    return;
+  }
+
+  let length: unknown;
+  try {
+    length = rows.length;
+  } catch {
+    fail('invalid_payload', 'rows');
+  }
+
+  if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) {
+    fail('invalid_type', 'rows');
+  }
+
+  if (length > MAX_DML_ROWS) {
+    fail('row_limit_exceeded', 'rows');
+  }
+}
+
+export function normalizeDmlInsertInput(value: unknown): DmlInsertInput {
+  precheckInsertRowsCardinality(value);
+  const payload = payloadSnapshot(value, 'input');
+  assertExactProperties(payload.value, ['schema', 'table', 'rows', 'reason'], 'input');
+
+  const input = payload.value as Record<string, unknown>;
+  const target = {
+    schema: normalizeDmlIdentifier(input.schema, 'schema'),
+    table: normalizeDmlIdentifier(input.table, 'table'),
+    reason: normalizeDmlReason(input.reason, 'reason'),
+  };
+  const rows = normalizeDmlRowsSnapshot(input.rows, 'rows');
+  const columns = Object.keys(rows[0] ?? {}).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+
+  return { target, rows, columns };
 }
 
 export const normalizeDmlInput = normalizeDmlTarget;
