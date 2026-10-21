@@ -3,6 +3,8 @@ import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues 
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
 
+import type { DmlAuditAttempt, DmlAuditRequest, DmlAuditWriter } from './dml-audit.js';
+import { buildDeleteStatement, buildUpdateStatement, type DeleteDmlBuilderInput, type UpdateDmlBuilderInput } from './dml-builder.js';
 import { sanitizeDmlDriverCode } from './dml-error-codes.js';
 import { assertDmlSql, DmlPolicyError, assertReadOnlySql } from './sql-policy.js';
 
@@ -49,8 +51,16 @@ function safeDriverCode(error: unknown): string | undefined {
     if (typeof error !== 'object' || error === null) {
       return undefined;
     }
-    const code = (error as { code?: unknown }).code;
-    return sanitizeDmlDriverCode(code);
+    for (const key of ['code', 'errno']) {
+      try {
+        if (!Object.hasOwn(error, key)) continue;
+        const sanitized = sanitizeDmlDriverCode((error as Record<string, unknown>)[key]);
+        if (sanitized !== undefined) return sanitized;
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -62,13 +72,38 @@ export interface PoolFactory {
 
 function isQueryTimeout(error: unknown): boolean {
   try {
+    if (typeof error !== 'object' || error === null || !Object.hasOwn(error, 'code')) return false;
+    const code = (error as Record<string, unknown>).code;
+    return code === 'PROTOCOL_SEQUENCE_TIMEOUT' || code === 'ETIMEDOUT';
+  } catch {
+    return false;
+  }
+}
+
+function isTransportLoss(error: unknown): boolean {
+  try {
+    if (typeof error !== 'object' || error === null || !Object.hasOwn(error, 'code')) return false;
+    const code = (error as Record<string, unknown>).code;
     return (
-      typeof error === 'object' &&
-      error !== null &&
-      ((error as { code?: unknown }).code === 'PROTOCOL_SEQUENCE_TIMEOUT' || (error as { code?: unknown }).code === 'ETIMEDOUT')
+      code === 'PROTOCOL_CONNECTION_LOST' ||
+      code === 'ECONNRESET' ||
+      code === 'ECONNREFUSED' ||
+      code === 'EPIPE' ||
+      code === 'ENETUNREACH' ||
+      code === 'EHOSTUNREACH'
     );
   } catch {
     return false;
+  }
+}
+
+function safeAffectedCount(result: unknown): number | undefined {
+  try {
+    if (typeof result !== 'object' || result === null || !Object.hasOwn(result, 'affectedRows')) return undefined;
+    const value = (result as Record<string, unknown>).affectedRows;
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -101,6 +136,7 @@ export interface ConnectionLayerBundle extends ConnectionLayer {
 interface DmlStatementData {
   readonly sql: string;
   readonly values?: ExecuteValues;
+  readonly auditRequest?: DmlAuditRequest;
 }
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
@@ -156,17 +192,42 @@ function snapshotDmlValue(value: unknown, activeObjects = new WeakSet<object>())
   return value;
 }
 
-/** @internal Creates a capability-bearing statement for structured internal DML builders. */
-export function createInternalDmlStatement(sql: string, values?: ExecuteValues): DmlStatement {
+function freezeAuditInput(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const nestedValue of Object.values(value)) freezeAuditInput(nestedValue);
+  return Object.freeze(value);
+}
+
+/** Creates the only capability-bearing DML statement form, atomically bound to its validated builder input. */
+export function createAuditedDmlStatement(operation: 'update' | 'delete', input: UpdateDmlBuilderInput | DeleteDmlBuilderInput): DmlStatement {
+  if (operation !== 'update' && operation !== 'delete') throw new DmlPolicyError();
+  let auditInput: UpdateDmlBuilderInput | DeleteDmlBuilderInput;
+  try {
+    auditInput = freezeAuditInput(structuredClone(input)) as UpdateDmlBuilderInput | DeleteDmlBuilderInput;
+  } catch {
+    throw new DmlPolicyError();
+  }
+  const built =
+    operation === 'update' ? buildUpdateStatement(auditInput as UpdateDmlBuilderInput) : buildDeleteStatement(auditInput as DeleteDmlBuilderInput);
+  const auditRequest: DmlAuditRequest =
+    operation === 'update'
+      ? Object.freeze({ operation: 'update', input: auditInput as UpdateDmlBuilderInput })
+      : Object.freeze({ operation: 'delete', input: auditInput as DeleteDmlBuilderInput });
   const statement = Object.freeze({}) as DmlStatement;
   dmlStatementRegistry.set(
     statement,
     Object.freeze({
-      sql,
-      values: values === undefined ? undefined : (snapshotDmlValue(values) as ExecuteValues),
+      sql: built.sql,
+      values: snapshotDmlValue(built.values) as ExecuteValues,
+      auditRequest,
     }),
   );
   return statement;
+}
+
+/** @deprecated Raw SQL cannot create an executable DML capability. */
+export function createInternalDmlStatement(_sql: string, _values?: ExecuteValues, _auditRequest?: DmlAuditRequest): DmlStatement {
+  return Object.freeze({}) as DmlStatement;
 }
 
 function toPoolOptions(config: ConnectionConfig): PoolOptions {
@@ -207,7 +268,8 @@ export function createConnectionLayer({
   environment = process.env,
   driver = mysql,
   readFile,
-}: Readonly<{ environment?: Environment; driver?: PoolFactory; readFile?: ReadFile }> = {}): ConnectionLayerBundle {
+  dmlAuditWriter,
+}: Readonly<{ environment?: Environment; driver?: PoolFactory; readFile?: ReadFile; dmlAuditWriter?: DmlAuditWriter }> = {}): ConnectionLayerBundle {
   const config = loadConnectionConfig(environment, { readFile });
   const pool = createPool(config, driver);
   const queryOptions = Object.freeze({ timeout: config.queryTimeoutMs });
@@ -241,16 +303,33 @@ export function createConnectionLayer({
       }
 
       const { sql, values } = statementData;
-      assertDmlSql(sql);
+      if (statementData.auditRequest === undefined) throw new DmlPolicyError();
+      let audit: DmlAuditAttempt;
+      try {
+        audit = (await import('./dml-audit.js')).createDmlAuditAttempt(statementData.auditRequest, { writer: dmlAuditWriter });
+      } catch {
+        throw new ConnectionError('The DML audit could not be started.');
+      }
 
       try {
-        return await pool.execute<T>({ sql, timeout: config.queryTimeoutMs }, values);
+        assertDmlSql(sql);
+        audit.markSubmitted();
+        const [result, fields] = await pool.execute<T>({ sql, timeout: config.queryTimeoutMs }, values);
+        audit.emit({ affectedCount: safeAffectedCount(result) });
+        return [result, fields];
       } catch (error) {
+        let safeError: unknown;
         if (isQueryTimeout(error)) {
-          throw new QueryTimeoutError();
+          safeError = new QueryTimeoutError();
+        } else if (isTransportLoss(error)) {
+          safeError = new ConnectionError('Unable to execute the DML statement.');
+        } else if (error instanceof DmlPolicyError) {
+          safeError = error;
+        } else {
+          safeError = new DmlDriverError(safeDriverCode(error));
         }
-
-        throw new DmlDriverError(safeDriverCode(error));
+        audit.emit({ error: safeError });
+        throw safeError;
       }
     },
   });
