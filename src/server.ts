@@ -5,7 +5,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 import { type Environment, type ReadFile } from './config.js';
-import { createConnectionLayer, type ConnectionLayer, type PoolFactory } from './db/pool.js';
+import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerExplainQueryTool } from './tools/explain.js';
@@ -23,7 +23,7 @@ export interface McpApplicationOptions {
 }
 
 export interface McpApplication {
-  readonly mysql: ConnectionLayer;
+  readonly mysql: ConnectionLayerBundle;
   readonly server: McpServer;
   close(): Promise<void>;
 }
