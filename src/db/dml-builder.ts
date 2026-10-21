@@ -3,10 +3,12 @@ import {
   MAX_DML_COLUMNS,
   assertDmlColumnCount,
   assertDmlParameterCount,
+  MAX_DML_ROWS,
   normalizeDmlIdentifier,
   normalizeDmlReason,
   normalizeDmlValue,
   type DmlScalar,
+  type DmlRow,
   type DmlTarget,
 } from '../tools/dml-input.js';
 
@@ -29,6 +31,12 @@ export interface DmlBuilderInput {
 
 export interface UpdateDmlBuilderInput extends DmlBuilderInput {
   readonly values: Readonly<Record<string, DmlScalar>>;
+}
+
+export interface InsertDmlBuilderInput {
+  readonly target: DmlTarget;
+  readonly columns: readonly string[];
+  readonly rows: readonly DmlRow[];
 }
 
 export type DeleteDmlBuilderInput = DmlBuilderInput;
@@ -312,5 +320,34 @@ export function buildDeleteStatement(input: DeleteDmlBuilderInput): BuiltDmlStat
   return immutableStatement(
     `DELETE FROM ${escapeTarget(request.target as DmlTarget)} WHERE ${filters.sql} ORDER BY ${orderBy} LIMIT ${limit}`,
     filters.values,
+  );
+}
+
+export function buildInsertStatement(input: InsertDmlBuilderInput): BuiltDmlStatement {
+  const request = exactDataRecord(input, ['target', 'columns', 'rows'], 'input');
+  const columns = normalizedColumns(request.columns, 'columns');
+  const rows = denseArray(request.rows, 'rows', MAX_DML_ROWS);
+  if (rows.length === 0) {
+    fail('invalid_value', 'rows');
+  }
+
+  const rowValues = rows.map((row) => {
+    const rowRecord = row as DmlRow;
+    const entries = ownDataEntries(rowRecord, 'row');
+    if (entries.length !== columns.length || entries.some(([column]) => !columns.includes(column))) {
+      fail('inconsistent_columns', 'rows');
+    }
+
+    return columns.map((column) => normalizeDmlValue(rowRecord[column], 'value'));
+  });
+  const values = rowValues.flat();
+  assertDmlParameterCount(values);
+
+  const placeholders = `(${columns.map(() => '?').join(', ')})`;
+  return immutableStatement(
+    `INSERT INTO ${escapeTarget(request.target as DmlTarget)} (${columns.map(escapeIdentifier).join(', ')}) VALUES ${rowValues
+      .map(() => placeholders)
+      .join(', ')}`,
+    values,
   );
 }

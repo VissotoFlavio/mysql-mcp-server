@@ -9,6 +9,7 @@ import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } f
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerExplainQueryTool } from './tools/explain.js';
+import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
 
 const SERVER_INFO = Object.freeze({
@@ -35,6 +36,9 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   registerDescribeTableTool(server, mysql);
   registerReadOnlyQueryTool(server, mysql);
   registerExplainQueryTool(server, mysql);
+  if (mysql.dmlEnabled) {
+    registerInsertRowsTool(server, mysql);
+  }
 
   return Object.freeze({
     mysql,

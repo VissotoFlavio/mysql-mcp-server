@@ -18,6 +18,7 @@ import {
   isDmlScalar,
   isDmlValue,
   normalizeDmlIdentifier,
+  normalizeDmlInsertInput,
   normalizeDmlReason,
   normalizeDmlRow,
   normalizeDmlRows,
@@ -55,6 +56,22 @@ test('normalizes valid targets, reasons, scalar values, and rows without changin
   assert.equal(normalizeDmlValue(true), true);
   assert.equal(normalizeDmlValue(null), null);
   assert.deepEqual(normalizeDmlRow({ nomé: '0007', ativo: true }), { nomé: '0007', ativo: true });
+});
+
+test('rejects oversized insert rows before reading row elements', () => {
+  let rowReads = 0;
+  const rows = Array.from({ length: MAX_DML_ROWS + 1 }, () => ({ id: 1 }));
+  Object.defineProperty(rows, 0, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      rowReads += 1;
+      return { id: 1 };
+    },
+  });
+
+  assertError(() => normalizeDmlInsertInput({ schema: 'app', table: 'items', rows, reason: 'bulk insert' }), 'row_limit_exceeded', 'rows');
+  assert.equal(rowReads, 0);
 });
 
 test('counts distinct columns and prepared parameters for reusable contracts', () => {
@@ -196,6 +213,21 @@ test('enforces the UTF-8 payload byte limit before normalization', () => {
   assertError(() => assertDmlPayloadSize({ value: repeatedCharacterPayload(MAX_DML_PAYLOAD_BYTES + 1) }), 'payload_too_large', 'input');
 });
 
+test('rejects an oversized property key before reading its value', () => {
+  let valueRead = false;
+  const input = {} as Record<string, unknown>;
+  Object.defineProperty(input, 'x'.repeat(MAX_DML_PAYLOAD_BYTES), {
+    enumerable: true,
+    get: () => {
+      valueRead = true;
+      return 'secret-value';
+    },
+  });
+
+  assertError(() => assertDmlPayloadSize(input), 'payload_too_large', 'input');
+  assert.equal(valueRead, false);
+});
+
 test('rejects unsafe JSON object shapes without raw exceptions or dynamic key disclosure', () => {
   const accessor = {} as Record<string, unknown>;
   let accessorRead = false;
@@ -226,7 +258,7 @@ test('rejects unsafe JSON object shapes without raw exceptions or dynamic key di
   assertError(() => assertDmlPayloadSize({ nested: symbolKey }), 'invalid_payload', 'input');
 
   const proxied = new Proxy(
-    { value: 'x'.repeat(MAX_DML_PAYLOAD_BYTES) },
+    { value: 'x'.repeat(100) },
     {
       get(target, property, receiver) {
         if (property === 'toJSON') {
@@ -253,7 +285,7 @@ test('rejects unsafe JSON object shapes without raw exceptions or dynamic key di
 
   const originalArrayToJson = Object.getOwnPropertyDescriptor(Array.prototype, 'toJSON');
   try {
-    const pollutedDuringEnumeration = new Proxy([{ value: 'x'.repeat(MAX_DML_PAYLOAD_BYTES) }], {
+    const pollutedDuringEnumeration = new Proxy([{ value: 'x'.repeat(100) }], {
       ownKeys(target) {
         Object.defineProperty(Array.prototype, 'toJSON', { configurable: true, value: () => [] });
         return Reflect.ownKeys(target);
