@@ -56,6 +56,7 @@ const VALIDATE_DML_METADATA_SQL = `
   WHERE tables.TABLE_SCHEMA = ?
     AND tables.TABLE_NAME = ?
   ORDER BY columns.ORDINAL_POSITION ASC
+  LIMIT ?
 `;
 
 const VALIDATE_DML_PRIMARY_KEY_SQL = `
@@ -204,13 +205,13 @@ export async function validateDmlMetadata(
   let rows: DmlMetadataRow[];
   let primaryKeyRows: DmlPrimaryKeyRow[];
   try {
-    [rows] = await mysql.query<DmlMetadataRow[]>(queryOptions(mysql, VALIDATE_DML_METADATA_SQL), [schema, table]);
+    [rows] = await mysql.query<DmlMetadataRow[]>(queryOptions(mysql, VALIDATE_DML_METADATA_SQL), [schema, table, MAX_METADATA_RESULTS + 1]);
     [primaryKeyRows] = await mysql.query<DmlPrimaryKeyRow[]>(queryOptions(mysql, VALIDATE_DML_PRIMARY_KEY_SQL), [schema, table]);
   } catch {
     throw new DmlMetadataError(DML_METADATA_UNAVAILABLE);
   }
 
-  if (!Array.isArray(rows) || !Array.isArray(primaryKeyRows) || rows.length === 0) {
+  if (!Array.isArray(rows) || !Array.isArray(primaryKeyRows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS) {
     throw new DmlMetadataError(DML_METADATA_UNAVAILABLE);
   }
   const firstRow = rows[0];
@@ -304,7 +305,11 @@ export async function validateDmlMetadata(
   }
 
   const columnPrimaryKeyNames = new Set(columns.filter(({ columnKey }) => columnKey === 'PRI').map(({ columnName }) => columnName));
-  if (columnPrimaryKeyNames.size !== primaryKeyNames.size || [...columnPrimaryKeyNames].some((columnName) => !primaryKeyNames.has(columnName))) {
+  if (
+    primaryKeyNames.size === 0 ||
+    columnPrimaryKeyNames.size !== primaryKeyNames.size ||
+    [...columnPrimaryKeyNames].some((columnName) => !primaryKeyNames.has(columnName))
+  ) {
     throw new DmlMetadataError(DML_METADATA_UNAVAILABLE);
   }
 

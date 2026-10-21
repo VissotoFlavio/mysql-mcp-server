@@ -76,16 +76,17 @@ test('returns primary-key constraint order and full column metadata for each ope
   assert.deepEqual(second, first);
   assert.equal(calls.count, 4);
   assert.deepEqual(calls.values, [
+    ['app', 'orders', 101],
     ['app', 'orders'],
-    ['app', 'orders'],
-    ['app', 'orders'],
+    ['app', 'orders', 101],
     ['app', 'orders'],
   ]);
+  assert.match(calls.sqls[0], /LIMIT \?/);
   assert.match(calls.sqls[0], /columns\.EXTRA AS extra/);
   assert.doesNotMatch(calls.sqls[0], /IS_GENERATED|IS_VISIBLE/);
 });
 
-test('does not truncate columns needed for validation beyond the discovery limit', async () => {
+test('rejects metadata beyond the DML column ceiling', async () => {
   const columns = Array.from({ length: 101 }, (_, index) =>
     column({
       columnName: `column_${index + 1}`,
@@ -96,10 +97,7 @@ test('does not truncate columns needed for validation beyond the discovery limit
   );
   const mysql = metadataLayer(columns, [primaryKey({ columnName: 'column_101', ordinalPosition: 1 })]);
 
-  const metadata = await validateDmlMetadata(mysql, 'app', 'orders', ['column_101']);
-
-  assert.equal(metadata.columns.length, 101);
-  assert.deepEqual(metadata.primaryKey, ['column_101']);
+  await assert.rejects(validateDmlMetadata(mysql, 'app', 'orders', ['column_101']), /Unable to validate the requested table metadata/);
 });
 
 test('rejects unknown, invisible, generated, and auto-increment supplied columns', async () => {
@@ -183,7 +181,10 @@ test('rejects malformed or inconsistent column and primary-key metadata', async 
     ),
     /Unable to validate the requested table metadata/,
   );
-  await assert.doesNotReject(validateDmlMetadata(metadataLayer([column({ columnKey: '', extra: '' })]), 'app', 'orders'));
+  await assert.rejects(
+    validateDmlMetadata(metadataLayer([column({ columnKey: '', extra: '' })]), 'app', 'orders'),
+    /Unable to validate the requested table metadata/,
+  );
 });
 
 test('sanitizes missing, inaccessible, and incompatible metadata', async () => {
