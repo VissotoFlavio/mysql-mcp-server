@@ -11,6 +11,7 @@ import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerExplainQueryTool } from './tools/explain.js';
 import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
+import { registerUpdateRowsTool } from './tools/update-rows.js';
 
 const SERVER_INFO = Object.freeze({
   name: 'mysql-mcp-server',
@@ -38,6 +39,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   registerExplainQueryTool(server, mysql);
   if (mysql.dmlEnabled) {
     registerInsertRowsTool(server, mysql);
+    registerUpdateRowsTool(server, mysql);
   }
 
   return Object.freeze({

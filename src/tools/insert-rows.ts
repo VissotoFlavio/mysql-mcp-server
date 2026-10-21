@@ -14,12 +14,13 @@ import {
 
 import {
   MAX_DML_COLUMNS,
+  DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN,
+  DML_SCALAR_JSON_SCHEMA,
   MAX_DML_IDENTIFIER_LENGTH,
   MAX_DML_PARAMETERS,
   MAX_DML_PAYLOAD_BYTES,
   MAX_DML_REASON_LENGTH,
   MAX_DML_ROWS,
-  MAX_DML_STRING_LENGTH,
   normalizeDmlInsertInput,
   type DmlInsertInput,
   type DmlScalar,
@@ -46,18 +47,6 @@ type InsertRowsError = Readonly<{
   message: string;
   retryAdvice?: string;
 }>;
-
-const noControlCharactersJsonSchemaPattern = '^(?![\\s\\S]*[\\p{Cc}\\p{Cf}\\u2028\\u2029])';
-
-const scalarJsonSchema = {
-  anyOf: [
-    { type: 'string', maxLength: MAX_DML_STRING_LENGTH, pattern: noControlCharactersJsonSchemaPattern },
-    { type: 'number', not: { type: 'integer' } },
-    { type: 'integer', minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
-    { type: 'boolean' },
-    { type: 'null' },
-  ],
-};
 
 const insertRowsInputSchema: StandardSchemaWithJSON<InsertRowsInput> = {
   '~standard': {
@@ -113,8 +102,8 @@ function insertRowsInputJsonSchema(): Record<string, unknown> {
     additionalProperties: false,
     required: ['schema', 'table', 'rows', 'reason'],
     properties: {
-      schema: { type: 'string', minLength: 1, maxLength: MAX_DML_IDENTIFIER_LENGTH, pattern: noControlCharactersJsonSchemaPattern },
-      table: { type: 'string', minLength: 1, maxLength: MAX_DML_IDENTIFIER_LENGTH, pattern: noControlCharactersJsonSchemaPattern },
+      schema: { type: 'string', minLength: 1, maxLength: MAX_DML_IDENTIFIER_LENGTH, pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN },
+      table: { type: 'string', minLength: 1, maxLength: MAX_DML_IDENTIFIER_LENGTH, pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN },
       rows: {
         type: 'array',
         minItems: 1,
@@ -127,16 +116,16 @@ function insertRowsInputJsonSchema(): Record<string, unknown> {
             type: 'string',
             minLength: 1,
             maxLength: MAX_DML_IDENTIFIER_LENGTH,
-            pattern: noControlCharactersJsonSchemaPattern,
+            pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN,
           },
-          additionalProperties: scalarJsonSchema,
+          additionalProperties: DML_SCALAR_JSON_SCHEMA,
         },
       },
       reason: {
         type: 'string',
         minLength: 1,
         maxLength: MAX_DML_REASON_LENGTH,
-        pattern: `^(?=.*\\S)${noControlCharactersJsonSchemaPattern.slice(1)}`,
+        pattern: `^(?=.*\\S)${DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN.slice(1)}`,
       },
     },
   };

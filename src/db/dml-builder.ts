@@ -56,11 +56,6 @@ export const MAX_DML_FILTER_IN_VALUES = 100;
 /** Limits the number of rows an UPDATE or DELETE statement may affect. */
 export const MAX_DML_LIMIT = 100;
 
-type NormalizedFilter =
-  | Readonly<{ column: string; operator: DmlComparisonOperator; values: readonly [Exclude<DmlScalar, null>] }>
-  | Readonly<{ column: string; operator: 'in'; values: readonly Exclude<DmlScalar, null>[] }>
-  | Readonly<{ column: string; operator: DmlNullOperator; values: readonly [] }>;
-
 const COMPARISON_SQL: Readonly<Record<DmlComparisonOperator, string>> = Object.freeze({
   eq: '=',
   neq: '<>',
@@ -204,18 +199,20 @@ function normalizeNonNullScalar(value: unknown): Exclude<DmlScalar, null> {
   return normalized;
 }
 
-function normalizeFilter(value: unknown, catalog: ReadonlySet<string>): NormalizedFilter {
+function normalizeFilter(value: unknown, catalog?: ReadonlySet<string>): DmlFilter {
   const base = Object.fromEntries(ownDataEntries(value, 'input'));
   const operator = base.operator;
   if (typeof operator !== 'string') {
     fail('invalid_value', 'input');
   }
 
-  const column = assertKnownColumn(base.column, catalog);
+  const column = normalizeDmlIdentifier(base.column, 'identifier');
+  if (catalog !== undefined && !catalog.has(column)) {
+    fail('invalid_value', 'input');
+  }
   if (Object.hasOwn(COMPARISON_SQL, operator)) {
     const filter = exactDataRecord(value, ['column', 'operator', 'value'], 'input');
-    const values = Object.freeze([normalizeNonNullScalar(filter.value)]) as readonly [Exclude<DmlScalar, null>];
-    return Object.freeze({ column, operator: operator as DmlComparisonOperator, values });
+    return Object.freeze({ column, operator: operator as DmlComparisonOperator, value: normalizeNonNullScalar(filter.value) });
   }
 
   if (operator === 'in') {
@@ -229,13 +226,13 @@ function normalizeFilter(value: unknown, catalog: ReadonlySet<string>): Normaliz
 
   if (operator === 'is_null' || operator === 'is_not_null') {
     exactDataRecord(value, ['column', 'operator'], 'input');
-    return Object.freeze({ column, operator, values: Object.freeze([]) as readonly [] });
+    return Object.freeze({ column, operator });
   }
 
   fail('invalid_value', 'input');
 }
 
-function normalizeFilters(value: unknown, catalog: ReadonlySet<string>, startingParameterCount = 0): readonly NormalizedFilter[] {
+export function normalizeDmlFilters(value: unknown, catalog?: ReadonlySet<string>, startingParameterCount = 0): readonly DmlFilter[] {
   const rawFilters = denseArray(value, 'input', MAX_DML_FILTERS);
   if (rawFilters.length === 0) {
     fail('invalid_value', 'input');
@@ -243,17 +240,17 @@ function normalizeFilters(value: unknown, catalog: ReadonlySet<string>, starting
 
   let parameterCount = startingParameterCount;
   assertDmlParameterCount(parameterCount);
-  const filters: NormalizedFilter[] = [];
+  const filters: DmlFilter[] = [];
   for (const rawFilter of rawFilters) {
     const filter = normalizeFilter(rawFilter, catalog);
-    parameterCount += filter.values.length;
+    parameterCount += filter.operator === 'in' ? filter.values.length : 'value' in filter ? 1 : 0;
     assertDmlParameterCount(parameterCount);
     filters.push(filter);
   }
   return filters;
 }
 
-function compileFilters(filters: readonly NormalizedFilter[]): Readonly<{ sql: string; values: readonly DmlScalar[] }> {
+function compileFilters(filters: readonly DmlFilter[]): Readonly<{ sql: string; values: readonly DmlScalar[] }> {
   const values: DmlScalar[] = [];
   const predicates = filters.map((filter) => {
     const column = escapeIdentifier(filter.column);
@@ -267,9 +264,11 @@ function compileFilters(filters: readonly NormalizedFilter[]): Readonly<{ sql: s
     if (filter.operator === 'is_not_null') {
       return `${column} IS NOT NULL`;
     }
-    const comparison = filter as Extract<NormalizedFilter, Readonly<{ operator: DmlComparisonOperator }>>;
-    values.push(comparison.values[0]);
-    return `${column} ${COMPARISON_SQL[comparison.operator]} ?`;
+    if (!('value' in filter)) {
+      fail('invalid_value', 'filters');
+    }
+    values.push(filter.value);
+    return `${column} ${COMPARISON_SQL[filter.operator]} ?`;
   });
 
   return Object.freeze({ sql: predicates.join(' AND '), values: Object.freeze(values) });
@@ -296,7 +295,7 @@ export function buildUpdateStatement(input: UpdateDmlBuilderInput): BuiltDmlStat
     fail('invalid_value', 'input');
   }
 
-  const normalizedFilters = normalizeFilters(request.filters, catalog, assignments.length);
+  const normalizedFilters = normalizeDmlFilters(request.filters, catalog, assignments.length);
   const filters = compileFilters(normalizedFilters);
   const limit = validateLimit(request.limit);
   const orderBy = orderByPrimaryKey(request.primaryKey, catalog);
@@ -313,7 +312,7 @@ export function buildDeleteStatement(input: DeleteDmlBuilderInput): BuiltDmlStat
   const request = exactDataRecord(input, ['target', 'filters', 'limit', 'columns', 'primaryKey'], 'input');
   const columns = normalizedColumns(request.columns, 'input');
   const catalog = new Set(columns);
-  const filters = compileFilters(normalizeFilters(request.filters, catalog));
+  const filters = compileFilters(normalizeDmlFilters(request.filters, catalog));
   const limit = validateLimit(request.limit);
   const orderBy = orderByPrimaryKey(request.primaryKey, catalog);
 

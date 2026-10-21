@@ -9,6 +9,7 @@ import {
   buildDeleteStatement,
   buildInsertStatement,
   buildUpdateStatement,
+  MAX_DML_LIMIT,
   type DeleteDmlBuilderInput,
   type InsertDmlBuilderInput,
   type UpdateDmlBuilderInput,
@@ -135,14 +136,10 @@ function isTransportLoss(error: unknown): boolean {
   }
 }
 
-function safeAffectedCount(result: unknown): number | undefined {
-  try {
-    if (typeof result !== 'object' || result === null || !Object.hasOwn(result, 'affectedRows')) return undefined;
-    const value = (result as Record<string, unknown>).affectedRows;
-    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-  } catch {
-    return undefined;
-  }
+function normalizeDmlCount(value: unknown, maximum: number | bigint = BigInt(Number.MAX_SAFE_INTEGER)): number {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= Number(maximum)) return value;
+  if (typeof value === 'bigint' && value >= 0n && value <= BigInt(maximum)) return Number(value);
+  throw new DmlResultError();
 }
 
 export function normalizeDmlInsertId(value: unknown): string | null {
@@ -191,6 +188,35 @@ function normalizeInsertResult(result: unknown): NormalizedInsertResult {
       warningStatus,
       insertId: normalizeDmlInsertId((result as Record<string, unknown>).insertId),
     });
+  } catch (error) {
+    if (safeInstanceOf(error, DmlResultError)) throw error;
+    throw new DmlResultError();
+  }
+}
+
+type NormalizedUpdateResult = Readonly<{
+  affectedRows: number;
+  changedRows: number;
+  warningStatus: number;
+}>;
+
+function normalizeUpdateResult(result: unknown): NormalizedUpdateResult {
+  try {
+    if (
+      typeof result !== 'object' ||
+      result === null ||
+      !Object.hasOwn(result, 'affectedRows') ||
+      !Object.hasOwn(result, 'changedRows') ||
+      !Object.hasOwn(result, 'warningStatus')
+    ) {
+      throw new DmlResultError();
+    }
+    const record = result as Record<string, unknown>;
+    const affectedRows = normalizeDmlCount(record.affectedRows, MAX_DML_LIMIT);
+    const changedRows = normalizeDmlCount(record.changedRows, MAX_DML_LIMIT);
+    const warningStatus = normalizeDmlCount(record.warningStatus);
+    if (changedRows > affectedRows) throw new DmlResultError();
+    return Object.freeze({ affectedRows, changedRows, warningStatus });
   } catch (error) {
     if (safeInstanceOf(error, DmlResultError)) throw error;
     throw new DmlResultError();
@@ -455,7 +481,9 @@ export function createConnectionLayer({
         normalizedResult = normalizedInsertResult as unknown as T;
         affectedCount = normalizedInsertResult.affectedRows;
       } else {
-        affectedCount = safeAffectedCount(result);
+        const normalizedUpdateResult = normalizeUpdateResult(result);
+        normalizedResult = normalizedUpdateResult as unknown as T;
+        affectedCount = normalizedUpdateResult.affectedRows;
       }
       audit.emit({ affectedCount });
       return [normalizedResult as T, fields, audit.operationId];

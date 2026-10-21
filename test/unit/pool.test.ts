@@ -114,7 +114,7 @@ test('executes DML through the prepared internal path without read-only validati
             executeCalls += 1;
             receivedOptions = options;
             receivedValues = values;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -128,7 +128,7 @@ test('executes DML through the prepared internal path without read-only validati
 
   const [result] = await layer.dml.executeDml(auditedUpdate());
 
-  assert.deepEqual(result, { affectedRows: 1 });
+  assert.deepEqual(result, { affectedRows: 1, changedRows: 1, warningStatus: 0 });
   assert.equal(queryCalls, 0);
   assert.equal(executeCalls, 1);
   assert.deepEqual(receivedOptions, { sql: 'UPDATE `app`.`accounts` SET `role` = ? WHERE `id` = ? ORDER BY `id` ASC LIMIT 1', timeout: 30_000 });
@@ -145,7 +145,7 @@ test('keeps the legacy DML tuple and exposes operation ids through the separate 
             return [[]];
           },
           async execute() {
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -198,6 +198,42 @@ test('does not log malformed post-execute INSERT metadata as succeeded', async (
   assert.equal(completed.result, 'indeterminate');
   assert.equal(completed.code, 'MYSQL_DML_OUTCOME_UNKNOWN');
   await layer.close();
+});
+
+test('normalizes update result metadata before success audit and rejects inconsistent counters', async () => {
+  for (const result of [
+    {},
+    { affectedRows: undefined, changedRows: 0, warningStatus: 0 },
+    { affectedRows: -1, changedRows: 0, warningStatus: 0 },
+    { affectedRows: 101, changedRows: 1, warningStatus: 0 },
+    { affectedRows: 2, changedRows: 3, warningStatus: 0 },
+    { affectedRows: 2, changedRows: 1, warningStatus: -1 },
+    { affectedRows: 2n ** 54n, changedRows: 1n, warningStatus: 0n },
+  ]) {
+    const lines: string[] = [];
+    const layer = createConnectionLayer({
+      environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+      dmlAuditWriter: (line) => lines.push(line),
+      driver: {
+        createPool() {
+          return {
+            async query() {
+              return [[]];
+            },
+            async execute() {
+              return [result, []];
+            },
+            async end() {},
+          } as never;
+        },
+      },
+    });
+    await assert.rejects(() => layer.dml.executeDmlWithOperationId(auditedUpdate()), /The DML result was invalid/);
+    const completed = JSON.parse(lines.at(-1) as string) as { result: string; code: string };
+    assert.equal(completed.result, 'indeterminate');
+    assert.equal(completed.code, 'MYSQL_DML_OUTCOME_UNKNOWN');
+    await layer.close();
+  }
 });
 
 test('sanitizes hostile proxy errors without leaking raw traps', async () => {
@@ -290,8 +326,7 @@ for (const invalidInsertId of [
   });
 }
 
-test('preserves large DML result identifiers as strings', async () => {
-  const largeInsertId = '9007199254740993';
+test('normalizes bounded DML update result counters', async () => {
   const layer = createConnectionLayer({
     environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
     driver: {
@@ -301,7 +336,7 @@ test('preserves large DML result identifiers as strings', async () => {
             return [[]];
           },
           async execute() {
-            return [{ affectedRows: 1, insertId: largeInsertId, changedRows: 0, warningStatus: 0 } as unknown as ResultSetHeader, []];
+            return [{ affectedRows: 1, changedRows: 0, warningStatus: 0 } as unknown as ResultSetHeader, []];
           },
           async end() {},
         } as never;
@@ -311,7 +346,7 @@ test('preserves large DML result identifiers as strings', async () => {
 
   const [result] = await layer.dml.executeDml<ResultSetHeader>(auditedUpdate());
 
-  assert.equal(result.insertId, largeInsertId);
+  assert.deepEqual(result, { affectedRows: 1, changedRows: 0, warningStatus: 0 });
   await layer.close();
 });
 
@@ -327,7 +362,7 @@ test('rejects non-DML and multiple statements before the DML driver path', async
           },
           async execute() {
             executeCalls += 1;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -456,7 +491,7 @@ test('rejects DML when the opt-in is unset or explicitly false', async () => {
             },
             async execute() {
               executeCalls += 1;
-              return [{ affectedRows: 1 }, []];
+              return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
             },
             async end() {},
           } as never;
@@ -499,7 +534,7 @@ test('rejects forged and throwing DML statements before the driver path', async 
           },
           async execute() {
             executeCalls += 1;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -606,7 +641,7 @@ test('closes the shared pool once after read and DML operations', async () => {
             return [[]];
           },
           async execute() {
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {
             endCalls += 1;
@@ -636,7 +671,7 @@ test('creates opaque executable statements only from builder input', async () =>
           },
           async execute(_options: unknown, values: unknown) {
             receivedValues = values;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -676,7 +711,7 @@ test('snapshots audit metadata when minting a DML capability', async () => {
             return [[]];
           },
           async execute() {
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         }) as never,
@@ -704,7 +739,7 @@ test('rejects malformed builder inputs without invoking the DML driver', async (
           },
           async execute() {
             executeCalls += 1;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;

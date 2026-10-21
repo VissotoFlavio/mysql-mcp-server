@@ -376,7 +376,7 @@ test('integrates audit lifecycle around the real DML dispatch path', async () =>
           },
           async execute() {
             calls += 1;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         }) as never,
@@ -406,7 +406,7 @@ test('integrates audit lifecycle around the real DML dispatch path', async () =>
           },
           async execute() {
             blockedCalls += 1;
-            return [{ affectedRows: 1 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         }) as never,
