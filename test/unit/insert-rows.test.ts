@@ -246,6 +246,7 @@ test('executes one prepared insert and returns only sanitized result metadata', 
 
     assert.equal(response.result?.isError, undefined);
     assert.deepEqual(result, {
+      operation: 'insert',
       operationId: result.operationId,
       target: { schema: 'app', table: 'orders' },
       affectedRows: 2,
@@ -516,7 +517,7 @@ test('advertises the structured sanitized error shape alongside the success fiel
     assert.deepEqual(
       (tool?.outputSchema?.anyOf as ReadonlyArray<Record<string, unknown>>).map((schema) => schema.required),
       [
-        ['operationId', 'target', 'affectedRows', 'insertId', 'warnings'],
+        ['operation', 'operationId', 'target', 'affectedRows', 'insertId', 'warnings'],
         ['code', 'message'],
       ],
     );

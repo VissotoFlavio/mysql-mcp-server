@@ -33,6 +33,7 @@ type InsertRowsInput = Readonly<{
 }>;
 
 type InsertRowsResult = Readonly<{
+  operation: 'insert';
   operationId: string;
   target: Readonly<{ schema: string; table: string }>;
   affectedRows: number;
@@ -147,8 +148,9 @@ function insertRowsOutputJsonSchema(): Record<string, unknown> {
       {
         type: 'object',
         additionalProperties: false,
-        required: ['operationId', 'target', 'affectedRows', 'insertId', 'warnings'],
+        required: ['operation', 'operationId', 'target', 'affectedRows', 'insertId', 'warnings'],
         properties: {
+          operation: { const: 'insert' },
           operationId: { type: 'string', minLength: 1 },
           target: {
             type: 'object',
@@ -192,8 +194,9 @@ function insertRowsOutputJsonSchema(): Record<string, unknown> {
 }
 
 function isInsertRowsResult(value: unknown): value is InsertRowsResult {
-  if (!isRecord(value) || Object.keys(value).length !== 5 || !isRecord(value.target)) return false;
+  if (!isRecord(value) || Object.keys(value).length !== 6 || !isRecord(value.target)) return false;
   return (
+    value.operation === 'insert' &&
     typeof value.operationId === 'string' &&
     Object.keys(value.target).length === 2 &&
     typeof value.target.schema === 'string' &&
@@ -247,6 +250,7 @@ function insertRowsResult(result: ResultSetHeader, operationId: string, input: D
   const affectedRows = safeCount(result.affectedRows);
   if (affectedRows > MAX_DML_ROWS) throw new DmlResultError();
   return {
+    operation: 'insert',
     operationId,
     target: { schema: input.target.schema, table: input.target.table },
     affectedRows,

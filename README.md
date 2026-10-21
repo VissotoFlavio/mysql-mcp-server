@@ -2,7 +2,7 @@
 
 `mysql-mcp-server` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for safe, bounded, read-only access to MySQL metadata, queries, and query plans, with an opt-in controlled insert capability. It runs only as a local stdio process: it does not expose an HTTP endpoint or listen on a network port.
 
-Use it with a dedicated MySQL account that has only the minimum read permissions required. The server neither grants nor elevates database permissions.
+Use it with one dedicated MySQL account that has only the minimum permissions required for the enabled capabilities. When `MYSQL_DML_ENABLED=true`, that account must also have the intended `INSERT` privilege on the target objects. The server neither grants nor elevates database permissions and does not require a separate DML credential or local allowlist.
 
 ## Project status
 
@@ -35,7 +35,7 @@ The [sanitized MCP workflow transcript](docs/sanitized-workflow-demo.md) shows m
 ## What you need
 
 - Node.js 22 or later and npm.
-- A reachable MySQL server and an account with the intended read access. The account's effective permissions determine the schemas, tables, and views that the tools can see.
+- A reachable MySQL server and an account with the intended least-privilege access. The account's effective permissions determine the schemas, tables, views, and (when enabled) target inserts available to the tools.
 - An MCP client that can launch a local stdio process. Consult that client's documentation for its configuration file and syntax; this project does not prescribe a particular client or vendor.
 - A secure way to supply process environment variables. Do not put credentials, connection strings, or TLS material in source control, chat transcripts, or a client configuration file.
 
@@ -105,7 +105,7 @@ The server registers these five read-only tools by default. When `MYSQL_DML_ENAB
 | `describe_table`          | Exactly `{ schema, table }`; each is a non-empty identifier of at most 64 characters and has no control characters.                                                                                      | `{ table: { schemaName, tableName, tableType }, columns: [{ columnName, dataType, isNullable, columnKey }] }`; describes one accessible table or view and returns at most 100 columns in ordinal position order.                            |
 | `execute_read_only_query` | Exactly `{ sql, parameters }`. `sql` is 1–10000 characters; `parameters` has at most 100 JSON scalars (`string`, finite `number`, `boolean`, or `null`), with strings up to 8192 characters.             | `{ columns: [{ name, type }], rows: [...] }`; at most 100 columns, 100 rows, and 512 KiB of serialized JSON. Values are JSON-compatible; returned big integers are strings, dates are ISO timestamps, and binary values are base64 strings. |
 | `explain_read_only_query` | The same input and validation as `execute_read_only_query`. Send the SELECT or CTE itself, not an `EXPLAIN` statement.                                                                                   | The same bounded `{ columns, rows }` shape, containing the MySQL `EXPLAIN` result. It uses `EXPLAIN`, never `EXPLAIN ANALYZE`.                                                                                                              |
-| `insert_rows`             | Only when `MYSQL_DML_ENABLED=true`. Exactly `{ schema, table, rows, reason }`; 1–100 rows, shared columns, bounded payload/columns/parameters, and no generated, invisible, or `AUTO_INCREMENT` columns. | `{ operationId, target, affectedRows, insertId, warnings }`; values are sent as prepared parameters, and errors are sanitized. No retry is performed.                                                                                       |
+| `insert_rows`             | Only when `MYSQL_DML_ENABLED=true`. Exactly `{ schema, table, rows, reason }`; 1–100 rows, shared columns, bounded payload/columns/parameters, and no generated, invisible, or `AUTO_INCREMENT` columns. | `{ operation: "insert", operationId, target, affectedRows, insertId, warnings }`; values are sent as prepared parameters, and errors are sanitized. No retry is performed.                                                                  |
 
 For both query tools, the SQL must be one policy-approved `SELECT` or read-only CTE and must contain a literal `LIMIT` from 0 through 100. Bind values through `parameters`; a parameter cannot replace the required literal `LIMIT`. Invalid SQL, oversized results, timeouts, unavailable objects, and connection failures return a safe MCP error result rather than an unfiltered driver error. `insert_rows` uses one prepared `INSERT` statement with escaped identifiers and bound values; MySQL remains the final authority for permissions and constraints, and the server does not use an application allowlist or `SHOW GRANTS` as a substitute.
 
