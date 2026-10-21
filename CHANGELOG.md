@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [#28 — feat: add structured filters with safe SQL generation](https://github.com/VissotoFlavio/mysql-mcp-server/issues/28)
+
 ## 0.1.0 - 2026-10-18
 
 - [#2 — feat: add direct MySQL connection layer](https://github.com/VissotoFlavio/mysql-mcp-server/issues/2)
