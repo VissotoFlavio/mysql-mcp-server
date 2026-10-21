@@ -13,4 +13,5 @@
 - [#18 — docs: explain value, use cases, security limits, and safe demo](https://github.com/VissotoFlavio/mysql-mcp-server/issues/18)
 - [#20 — ci: open a branch-based master-to-develop backport pull request](https://github.com/VissotoFlavio/mysql-mcp-server/issues/20)
 - [#26 — feat: add opt-in DML configuration flag](https://github.com/VissotoFlavio/mysql-mcp-server/issues/26)
+- [#27 — feat: validate tables, columns, and keys before writes](https://github.com/VissotoFlavio/mysql-mcp-server/issues/27)
 - [#30 — feat: create controlled internal DML execution path](https://github.com/VissotoFlavio/mysql-mcp-server/issues/30)
