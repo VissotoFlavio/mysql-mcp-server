@@ -19,10 +19,9 @@ const insertRequest = {
   operation: 'insert' as const,
   target: { schema: 'app', table: 'accounts' },
   reason: 'Insert accounts',
-  suppliedCount: 1,
-  rowCount: 1,
-  columns: ['id'],
-  values: [1],
+  rowCount: 2,
+  columns: ['id', 'status'],
+  values: [1, 'active', 2, 'pending'],
 };
 const deleteRequest = {
   operation: 'delete' as const,
@@ -209,12 +208,15 @@ test('maps own MySQL code and errno permission classifications without messages'
 });
 
 test('validates operation-specific limits', () => {
-  for (const candidate of [
-    { ...request, limit: 1 },
-    { ...deleteRequest, limit: MAX_DML_LIMIT },
-  ])
+  for (const candidate of [insertRequest, { ...request, limit: 1 }, { ...deleteRequest, limit: MAX_DML_LIMIT }])
     assert.notEqual(createDmlAuditAttempt(candidate, { writer: () => {} }).emit().operation, 'invalid');
-  for (const candidate of [{ ...request, limit: 0 }, { ...deleteRequest, limit: MAX_DML_LIMIT + 1 }, insertRequest])
+  for (const candidate of [
+    { ...insertRequest, limit: 1 },
+    { ...insertRequest, rowCount: 0 },
+    { ...insertRequest, rowCount: 101, values: new Array(202).fill(1) },
+    { ...request, limit: 0 },
+    { ...deleteRequest, limit: MAX_DML_LIMIT + 1 },
+  ])
     assert.equal(createDmlAuditAttempt(candidate, { writer: () => {} }).emit().code, 'MYSQL_DML_INVALID_ARGUMENT');
 });
 
@@ -240,11 +242,33 @@ test('enforces DML audit row, parameter, and filter cardinality boundaries', () 
   assert.equal(createDmlAuditAttempt({ ...request, suppliedCount: 1, values: ['one', 'two'] }, { writer: () => {} }).emit().operation, 'invalid');
 });
 
-test('enforces exact update and delete audit shapes without recording values', () => {
-  for (const candidate of [request, deleteRequest])
+test('enforces exact insert, update, and delete audit shapes without recording values', () => {
+  for (const candidate of [insertRequest, request, deleteRequest])
     assert.notEqual(createDmlAuditAttempt(candidate, { writer: () => {} }).emit().operation, 'invalid');
-  for (const candidate of [insertRequest, { ...request, filters: [] }, { ...deleteRequest, suppliedCount: 1 }, { ...deleteRequest, values: [] }])
+  for (const candidate of [
+    { ...insertRequest, values: insertRequest.values.slice(1) },
+    { ...insertRequest, filters: [] },
+    { ...request, filters: [] },
+    { ...deleteRequest, suppliedCount: 1 },
+    { ...deleteRequest, values: [] },
+  ])
     assert.equal(createDmlAuditAttempt(candidate, { writer: () => {} }).emit().operation, 'invalid');
+});
+
+test('emits redacted insert audit events with null limit and structural counts', () => {
+  const lines: string[] = [];
+  const attempt = createDmlAuditAttempt(insertRequest, { writer: (line) => lines.push(line), operationId: () => 'insert-op' });
+  attempt.markSubmitted();
+  const completed = attempt.emit({ affectedCount: 2 });
+  const [started] = lines.map((line) => JSON.parse(line));
+  assert.equal(started.operation, 'insert');
+  assert.equal(started.requestedLimit, null);
+  assert.equal(started.rowCount, 2);
+  assert.equal(started.columnCount, 2);
+  assert.equal(started.parameterCount, 4);
+  assert.equal(completed.operationId, 'insert-op');
+  assert.doesNotMatch(JSON.stringify(lines), /active|pending/);
+  assert.notEqual(createDmlRequestHash(insertRequest), createDmlRequestHash({ ...insertRequest, values: [true, 3, false, 4] }));
 });
 
 test('accepts the actual update/delete builder inputs and rejects malformed builder metadata', () => {

@@ -4,6 +4,7 @@ import {
   DmlInputValidationError,
   MAX_DML_COLUMNS,
   MAX_DML_PARAMETERS,
+  MAX_DML_ROWS,
   normalizeDmlIdentifier,
   normalizeDmlReason,
   normalizeDmlValue,
@@ -16,7 +17,7 @@ import { DmlMetadataError } from './metadata.js';
 import { ConnectionError, DmlDisabledError, DmlDriverError, QueryTimeoutError } from './pool.js';
 import { DmlPolicyError } from './sql-policy.js';
 
-export type DmlOperation = 'update' | 'delete';
+export type DmlOperation = 'insert' | 'update' | 'delete';
 export type DmlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
 export type DmlAuditOperation = DmlOperation | 'invalid';
 type SafeScalarType = 'string' | 'number' | 'boolean' | 'null';
@@ -35,9 +36,20 @@ interface DmlAuditRequestBase {
   readonly values?: readonly unknown[];
   readonly rowCount?: number;
 }
+interface DmlAuditInsertRequest {
+  readonly operation: 'insert';
+  readonly target: Readonly<{ schema: string; table: string }>;
+  readonly reason: string;
+  readonly rowCount: number;
+  readonly columns: readonly string[];
+  /** Flattened row values, used only to derive redacted type markers. */
+  readonly values: readonly unknown[];
+  readonly limit?: null;
+}
 /** Values and filter values are reduced to type markers before hashing or logging. */
 export type DmlAuditRequest =
   | (DmlAuditRequestBase & Readonly<{ operation: 'update' | 'delete'; limit: number }>)
+  | DmlAuditInsertRequest
   | Readonly<{ operation: 'update'; input: UpdateDmlBuilderInput }>
   | Readonly<{ operation: 'delete'; input: DeleteDmlBuilderInput }>;
 export interface SafeDmlOutcome {
@@ -118,7 +130,7 @@ const INVALID_REQUEST: NormalizedRequest = Object.freeze({
   valueTypes: Object.freeze([]),
   invalid: true,
 });
-const OPERATION_SET = new Set<DmlOperation>(['update', 'delete']);
+const OPERATION_SET = new Set<DmlOperation>(['insert', 'update', 'delete']);
 const SAFE_FILTER_OPERATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null', 'is_not_null']);
 function safeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -302,7 +314,6 @@ function normalizeRequest(request: unknown): NormalizedRequest {
     const operation = ownData(request, 'operation', true).value;
     const target = ownData(request, 'target', true).value;
     const reason = ownData(request, 'reason', true).value;
-    const suppliedCount = ownData(request, 'suppliedCount', true).value;
     const limitField = ownData(request, 'limit');
     const columnsField = ownData(request, 'columns', true);
     const filtersField = ownData(request, 'filters');
@@ -310,22 +321,55 @@ function normalizeRequest(request: unknown): NormalizedRequest {
     const rowCountField = ownData(request, 'rowCount');
     const primaryKeyField = ownData(request, 'primaryKey');
     const assignmentColumnsField = ownData(request, 'assignmentColumns');
-    if (
-      !OPERATION_SET.has(operation as DmlOperation) ||
-      typeof target !== 'object' ||
-      target === null ||
-      Array.isArray(target) ||
-      !safeInteger(suppliedCount) ||
-      suppliedCount > MAX_DML_PARAMETERS
-    )
+    if (!OPERATION_SET.has(operation as DmlOperation) || typeof target !== 'object' || target === null || Array.isArray(target))
       return INVALID_REQUEST;
     const schema = ownData(target, 'schema', true).value;
     const table = ownData(target, 'table', true).value;
+    const columns = normalizeColumns(columnsField.value);
+    if (operation === 'insert') {
+      if (
+        (limitField.present && limitField.value !== null) ||
+        filtersField.present ||
+        !valuesField.present ||
+        !rowCountField.present ||
+        !safeInteger(rowCountField.value) ||
+        rowCountField.value < 1 ||
+        rowCountField.value > MAX_DML_ROWS
+      )
+        return INVALID_REQUEST;
+      const valueTypes = normalizeValueTypes(valuesField.value);
+      const parameterCount = valueTypes.length;
+      if (parameterCount > MAX_DML_PARAMETERS || parameterCount !== rowCountField.value * columns.length) return INVALID_REQUEST;
+      return Object.freeze({
+        operation: 'insert',
+        target: Object.freeze({
+          schema: normalizeDmlIdentifier(schema, 'identifier'),
+          table: normalizeDmlIdentifier(table, 'identifier'),
+        }),
+        reason: normalizeDmlReason(reason, 'reason'),
+        limit: null,
+        rowCount: rowCountField.value,
+        parameterCount,
+        columns,
+        primaryKey: Object.freeze([]),
+        assignmentColumns: Object.freeze([]),
+        filters: Object.freeze([]),
+        valueTypes,
+        invalid: false,
+      });
+    }
+    const suppliedCount = ownData(request, 'suppliedCount', true).value;
     const limit = limitField.value;
-    if ((operation !== 'update' && operation !== 'delete') || !limitField.present || !safeInteger(limit) || limit < 1 || limit > MAX_DML_LIMIT)
+    if (
+      !safeInteger(suppliedCount) ||
+      suppliedCount > MAX_DML_PARAMETERS ||
+      !limitField.present ||
+      !safeInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_DML_LIMIT
+    )
       return INVALID_REQUEST;
     if (rowCountField.present && !safeInteger(rowCountField.value)) return INVALID_REQUEST;
-    const columns = normalizeColumns(columnsField.value);
     const primaryKey = primaryKeyField.present ? normalizeColumnSequence(primaryKeyField.value) : Object.freeze([]);
     const assignmentColumns = assignmentColumnsField.present
       ? snapshotArray(assignmentColumnsField.value, MAX_DML_COLUMNS).length === 0
