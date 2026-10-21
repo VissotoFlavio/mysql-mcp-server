@@ -67,6 +67,7 @@ export interface ConnectionLayer {
 }
 
 export interface ConnectionLayerBundle extends ConnectionLayer {
+  readonly dmlEnabled: boolean;
   readonly dml: DmlConnectionLayer;
 }
 
@@ -156,6 +157,8 @@ function toPoolOptions(config: ConnectionConfig): PoolOptions {
     queueLimit: config.queueLimit,
     connectTimeout: config.connectTimeoutMs,
     multipleStatements: false,
+    supportBigNumbers: true,
+    bigNumberStrings: true,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
   };
@@ -226,6 +229,7 @@ export function createConnectionLayer({
   });
 
   return Object.freeze({
+    dmlEnabled: config.dmlEnabled,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
     async query<T extends QueryResult>(

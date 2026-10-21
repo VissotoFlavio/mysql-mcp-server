@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 
 import {
   ConnectionError,
@@ -38,7 +38,10 @@ test('creates a bounded pool with secure driver options', async () => {
   assert.equal(suppliedOptions?.connectionLimit, 2);
   assert.equal(suppliedOptions?.connectTimeout, 5_000);
   assert.equal(suppliedOptions?.multipleStatements, false);
+  assert.equal(suppliedOptions?.supportBigNumbers, true);
+  assert.equal(suppliedOptions?.bigNumberStrings, true);
   assert.equal(suppliedOptions?.ssl, undefined);
+  assert.equal(layer.dmlEnabled, false);
 
   await layer.close();
 });
@@ -109,6 +112,31 @@ test('executes DML through the prepared internal path without read-only validati
   assert.equal(executeCalls, 1);
   assert.deepEqual(receivedOptions, { sql: 'UPDATE accounts SET role = ? WHERE id = ?', timeout: 30_000 });
   assert.deepEqual(receivedValues, ['admin', 1]);
+});
+
+test('preserves large DML result identifiers as strings', async () => {
+  const largeInsertId = '9007199254740993';
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            return [{ affectedRows: 1, insertId: largeInsertId, changedRows: 0, warningStatus: 0 } as unknown as ResultSetHeader, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+
+  const [result] = await layer.dml.executeDml<ResultSetHeader>(createInternalDmlStatement('INSERT INTO accounts (name) VALUES (?)', ['Ada']));
+
+  assert.equal(result.insertId, largeInsertId);
+  await layer.close();
 });
 
 test('rejects non-DML and multiple statements before the DML driver path', async () => {
