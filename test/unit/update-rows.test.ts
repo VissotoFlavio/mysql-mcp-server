@@ -182,8 +182,35 @@ test('registers update_rows only for DML and advertises the required risk annota
       false,
     );
     const updateTool = tools.at(-1) as { inputSchema?: Record<string, unknown> };
-    const valuesSchema = (updateTool.inputSchema?.properties as Record<string, Record<string, unknown>>).values;
+    const inputSchema = updateTool.inputSchema as Record<string, unknown>;
+    const properties = inputSchema.properties as Record<string, Record<string, unknown>>;
+    const valuesSchema = properties.values;
     assert.match(String((valuesSchema.propertyNames as Record<string, unknown>).pattern), /Cc/);
+    const filterVariants = ((properties.filters.items as Record<string, unknown>).anyOf as ReadonlyArray<Record<string, unknown>>).map((variant) => ({
+      properties: variant.properties as Record<string, unknown>,
+      required: variant.required,
+    }));
+    assert.deepEqual(
+      filterVariants.map(({ required }) => required),
+      [
+        ['column', 'operator', 'value'],
+        ['column', 'operator', 'values'],
+        ['column', 'operator'],
+      ],
+    );
+    assert.deepEqual(
+      filterVariants.map(
+        ({ properties: variantProperties }) =>
+          (variantProperties.operator as Record<string, unknown>).enum ?? (variantProperties.operator as Record<string, unknown>).const,
+      ),
+      [['eq', 'neq', 'gt', 'gte', 'lt', 'lte'], 'in', ['is_null', 'is_not_null']],
+    );
+    assert.equal(Object.hasOwn(filterVariants[0].properties, 'values'), false);
+    assert.equal(Object.hasOwn(filterVariants[1].properties, 'value'), false);
+    assert.equal(Object.hasOwn(filterVariants[2].properties, 'value'), false);
+    assert.equal(Object.hasOwn(filterVariants[2].properties, 'values'), false);
+    assert.deepEqual(filterVariants[0].properties.value, (filterVariants[1].properties.values as Record<string, unknown>).items);
+    assert.doesNotMatch(JSON.stringify(filterVariants[0].properties.value), /"null"/);
   } finally {
     await client.close();
     await disabledClient.close();

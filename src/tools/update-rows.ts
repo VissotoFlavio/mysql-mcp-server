@@ -9,6 +9,7 @@ import { createAuditedDmlStatement, type ConnectionLayerBundle, type DmlStatemen
 import {
   assertDmlPayloadSize,
   DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN,
+  DML_NON_NULL_SCALAR_JSON_SCHEMA,
   DML_SCALAR_JSON_SCHEMA,
   DmlInputValidationError,
   MAX_DML_COLUMNS,
@@ -56,15 +57,52 @@ type UpdateRowsError = Readonly<{
 }>;
 
 const filterJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['column', 'operator'],
-  properties: {
-    column: { type: 'string', minLength: 1, maxLength: MAX_DML_IDENTIFIER_LENGTH, pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN },
-    operator: { enum: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null', 'is_not_null'] },
-    value: DML_SCALAR_JSON_SCHEMA,
-    values: { type: 'array', minItems: 1, maxItems: MAX_DML_FILTER_IN_VALUES, items: DML_SCALAR_JSON_SCHEMA },
-  },
+  anyOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['column', 'operator', 'value'],
+      properties: {
+        column: {
+          type: 'string',
+          minLength: 1,
+          maxLength: MAX_DML_IDENTIFIER_LENGTH,
+          pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN,
+        },
+        operator: { enum: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'] },
+        value: DML_NON_NULL_SCALAR_JSON_SCHEMA,
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['column', 'operator', 'values'],
+      properties: {
+        column: {
+          type: 'string',
+          minLength: 1,
+          maxLength: MAX_DML_IDENTIFIER_LENGTH,
+          pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN,
+        },
+        operator: { const: 'in' },
+        values: { type: 'array', minItems: 1, maxItems: MAX_DML_FILTER_IN_VALUES, items: DML_NON_NULL_SCALAR_JSON_SCHEMA },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['column', 'operator'],
+      properties: {
+        column: {
+          type: 'string',
+          minLength: 1,
+          maxLength: MAX_DML_IDENTIFIER_LENGTH,
+          pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN,
+        },
+        operator: { enum: ['is_null', 'is_not_null'] },
+      },
+    },
+  ],
 };
 
 const updateRowsInputSchema: StandardSchemaWithJSON<UpdateRowsInput> = {

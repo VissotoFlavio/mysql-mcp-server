@@ -7,14 +7,15 @@ export const MAX_DML_ROWS = 100;
 export const MAX_DML_PAYLOAD_BYTES = 262_144;
 export const MAX_DML_NESTING_DEPTH = 100;
 export const DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN = '^(?![\\s\\S]*[\\p{Cc}\\p{Cf}\\u2028\\u2029])';
+const DML_NON_NULL_SCALAR_JSON_SCHEMAS = [
+  { type: 'string', maxLength: MAX_DML_STRING_LENGTH, pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN },
+  { type: 'number', not: { type: 'integer' } },
+  { type: 'integer', minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
+  { type: 'boolean' },
+] as const;
+export const DML_NON_NULL_SCALAR_JSON_SCHEMA = { anyOf: DML_NON_NULL_SCALAR_JSON_SCHEMAS } as const;
 export const DML_SCALAR_JSON_SCHEMA = {
-  anyOf: [
-    { type: 'string', maxLength: MAX_DML_STRING_LENGTH, pattern: DML_NO_CONTROL_CHARACTERS_JSON_SCHEMA_PATTERN },
-    { type: 'number', not: { type: 'integer' } },
-    { type: 'integer', minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
-    { type: 'boolean' },
-    { type: 'null' },
-  ],
+  anyOf: [...DML_NON_NULL_SCALAR_JSON_SCHEMAS, { type: 'null' }],
 } as const;
 
 export type DmlScalar = string | number | boolean | null;
