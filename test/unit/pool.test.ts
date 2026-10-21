@@ -5,15 +5,34 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 
 import {
   ConnectionError,
+  createAuditedDmlStatement,
   createConnectionLayer,
-  createInternalDmlStatement,
   DmlDisabledError,
   type ConnectionLayer,
   verifyConnection,
 } from '../../src/db/pool.js';
 import { DmlPolicyError, SqlPolicyError } from '../../src/db/sql-policy.js';
+import { DmlInputValidationError } from '../../src/tools/dml-input.js';
 
 import { validEnvironment } from './fixtures.js';
+
+const auditedUpdate = () =>
+  createAuditedDmlStatement('update', {
+    target: { schema: 'app', table: 'accounts', reason: 'controlled update' },
+    values: { role: 'admin' },
+    filters: [{ column: 'id', operator: 'eq', value: 1 }],
+    limit: 1,
+    columns: ['id', 'role'],
+    primaryKey: ['id'],
+  });
+const auditedDelete = () =>
+  createAuditedDmlStatement('delete', {
+    target: { schema: 'app', table: 'accounts', reason: 'controlled delete' },
+    filters: [{ column: 'id', operator: 'eq', value: 1 }],
+    limit: 1,
+    columns: ['id', 'role'],
+    primaryKey: ['id'],
+  });
 
 test('creates a bounded pool with secure driver options', async () => {
   let suppliedOptions: Record<string, unknown> | undefined;
@@ -105,12 +124,12 @@ test('executes DML through the prepared internal path without read-only validati
   assert.equal('executeDml' in readOnlyLayer, false);
   assert.equal(typeof layer.dml.executeDml, 'function');
 
-  const [result] = await layer.dml.executeDml(createInternalDmlStatement('UPDATE accounts SET role = ? WHERE id = ?', ['admin', 1]));
+  const [result] = await layer.dml.executeDml(auditedUpdate());
 
   assert.deepEqual(result, { affectedRows: 1 });
   assert.equal(queryCalls, 0);
   assert.equal(executeCalls, 1);
-  assert.deepEqual(receivedOptions, { sql: 'UPDATE accounts SET role = ? WHERE id = ?', timeout: 30_000 });
+  assert.deepEqual(receivedOptions, { sql: 'UPDATE `app`.`accounts` SET `role` = ? WHERE `id` = ? ORDER BY `id` ASC LIMIT 1', timeout: 30_000 });
   assert.deepEqual(receivedValues, ['admin', 1]);
 });
 
@@ -133,7 +152,7 @@ test('preserves large DML result identifiers as strings', async () => {
     },
   });
 
-  const [result] = await layer.dml.executeDml<ResultSetHeader>(createInternalDmlStatement('INSERT INTO accounts (name) VALUES (?)', ['Ada']));
+  const [result] = await layer.dml.executeDml<ResultSetHeader>(auditedUpdate());
 
   assert.equal(result.insertId, largeInsertId);
   await layer.close();
@@ -159,9 +178,9 @@ test('rejects non-DML and multiple statements before the DML driver path', async
     },
   });
 
-  for (const sql of ['SELECT 1', 'CREATE TABLE accounts (id INT)', 'SHOW TABLES', 'UPDATE accounts SET role = ?; DELETE FROM accounts']) {
+  for (const _sql of ['SELECT 1', 'CREATE TABLE accounts (id INT)', 'SHOW TABLES', 'UPDATE accounts SET role = ?; DELETE FROM accounts']) {
     await assert.rejects(
-      () => layer.dml.executeDml(createInternalDmlStatement(sql)),
+      () => layer.dml.executeDml(Object.freeze({}) as never),
       (error: unknown) => {
         assert(error instanceof DmlPolicyError);
         assert.equal(error.code, 'MYSQL_SQL_NOT_DML');
@@ -340,7 +359,7 @@ test('rejects forged and throwing DML statements before the driver path', async 
       },
     },
   );
-  const proxyAroundTrustedStatement = new Proxy(createInternalDmlStatement('UPDATE accounts SET role = ?', ['admin']), {});
+  const proxyAroundTrustedStatement = new Proxy(auditedUpdate(), {});
 
   for (const statement of [forgedStatement, throwingStatement, proxyAroundTrustedStatement]) {
     await assert.rejects(
@@ -379,7 +398,7 @@ test('redacts DML driver errors and preserves timeout classification', async () 
   });
 
   await assert.rejects(
-    () => layer.dml.executeDml(createInternalDmlStatement('DELETE FROM accounts WHERE id = ?', [1])),
+    () => layer.dml.executeDml(auditedDelete()),
     (error: unknown) => {
       assert(error instanceof ConnectionError);
       assert.equal(error.message, 'Unable to execute the DML statement.');
@@ -407,7 +426,7 @@ test('redacts DML driver errors and preserves timeout classification', async () 
   });
 
   await assert.rejects(
-    () => timeoutLayer.dml.executeDml(createInternalDmlStatement('UPDATE accounts SET role = ? WHERE id = ?', ['admin', 1])),
+    () => timeoutLayer.dml.executeDml(auditedUpdate()),
     (error: unknown) => {
       assert.equal((error as ConnectionError).code, 'MYSQL_QUERY_TIMEOUT');
       assert.equal((error as Error).message, 'MySQL query timed out.');
@@ -441,14 +460,14 @@ test('closes the shared pool once after read and DML operations', async () => {
   });
 
   await layer.query({ sql: 'SELECT 1', timeout: 30_000 });
-  await layer.dml.executeDml(createInternalDmlStatement('UPDATE accounts SET role = ? WHERE id = ?', ['admin', 1]));
+  await layer.dml.executeDml(auditedUpdate());
   await layer.close();
 
   assert.equal(createPoolCalls, 1);
   assert.equal(endCalls, 1);
 });
 
-test('snapshots prepared values in the internal DML statement factory', async () => {
+test('creates opaque executable statements only from builder input', async () => {
   let receivedValues: unknown;
   const layer = createConnectionLayer({
     environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
@@ -467,31 +486,56 @@ test('snapshots prepared values in the internal DML statement factory', async ()
       },
     },
   });
-  const sourceValues = {
-    role: 'admin',
-    nested: ['before'],
-    metadata: { source: 'internal' },
-  };
-  const statement = createInternalDmlStatement('UPDATE accounts SET role = ? WHERE id = ?', sourceValues);
+  const statement = auditedUpdate();
   assert.deepEqual(Object.keys(statement), []);
-
-  sourceValues.role = 'changed';
-  sourceValues.nested[0] = 'changed';
-  sourceValues.metadata.source = 'changed';
 
   await layer.dml.executeDml(statement);
 
-  assert.deepEqual(receivedValues, {
-    role: 'admin',
-    nested: ['before'],
-    metadata: { source: 'internal' },
-  });
+  assert.deepEqual(receivedValues, ['admin', 1]);
   assert(Object.isFrozen(receivedValues as object));
-  assert(Object.isFrozen((receivedValues as { nested: unknown[] }).nested));
-  assert(Object.isFrozen((receivedValues as { metadata: object }).metadata));
 });
 
-test('rejects cyclic prepared values without invoking the DML driver', async () => {
+test('snapshots audit metadata when minting a DML capability', async () => {
+  const input = {
+    target: { schema: 'app', table: 'accounts', reason: 'original reason' },
+    values: { role: 'admin' },
+    filters: [{ column: 'id', operator: 'eq' as const, value: 1 }],
+    limit: 1,
+    columns: ['id', 'role'],
+    primaryKey: ['id'],
+  };
+  const statement = createAuditedDmlStatement('update', input);
+  input.target.table = 'changed';
+  input.target.reason = 'changed reason';
+  input.filters[0] = { column: 'role', operator: 'eq', value: 2 };
+  const lines: string[] = [];
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    dmlAuditWriter: (line) => lines.push(line),
+    driver: {
+      createPool: () =>
+        ({
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            return [{ affectedRows: 1 }, []];
+          },
+          async end() {},
+        }) as never,
+    },
+  });
+  await layer.dml.executeDml(statement);
+  const [started, completed] = lines.map((line) => JSON.parse(line));
+  assert.equal(started.target.table, 'accounts');
+  assert.equal(started.reason, 'original reason');
+  assert.equal(started.requestHash, completed.requestHash);
+  assert.doesNotMatch(lines.join('\n'), /changed/);
+  assert.throws(() => createAuditedDmlStatement('insert' as never, input as never), DmlPolicyError);
+  assert.throws(() => createAuditedDmlStatement('update', new Proxy(input, {}) as never), DmlPolicyError);
+});
+
+test('rejects malformed builder inputs without invoking the DML driver', async () => {
   let executeCalls = 0;
   const layer = createConnectionLayer({
     environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
@@ -510,15 +554,18 @@ test('rejects cyclic prepared values without invoking the DML driver', async () 
       },
     },
   });
-  const cyclicValues = {} as Record<string, import('mysql2').ExecuteValues>;
-  cyclicValues.self = cyclicValues;
-
   assert.throws(
-    () => createInternalDmlStatement('UPDATE accounts SET role = ?', cyclicValues),
+    () =>
+      createAuditedDmlStatement('update', {
+        target: { schema: 'app', table: 'accounts', reason: 'controlled update' },
+        values: { unknown: 'admin' },
+        filters: [{ column: 'id', operator: 'eq', value: 1 }],
+        limit: 1,
+        columns: ['id', 'role'],
+        primaryKey: ['id'],
+      }),
     (error: unknown) => {
-      assert(error instanceof DmlPolicyError);
-      assert.equal(error.code, 'MYSQL_SQL_NOT_DML');
-      assert.equal(error.message, 'Only one top-level DML statement is allowed.');
+      assert(error instanceof DmlInputValidationError);
       return true;
     },
   );
