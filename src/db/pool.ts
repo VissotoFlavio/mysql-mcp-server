@@ -3,6 +3,7 @@ import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues 
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
 
+import { sanitizeDmlDriverCode } from './dml-error-codes.js';
 import { assertDmlSql, DmlPolicyError, assertReadOnlySql } from './sql-policy.js';
 
 export class ConnectionError extends Error {
@@ -32,17 +33,43 @@ export class DmlDisabledError extends ConnectionError {
   }
 }
 
+/** @internal Carries only an allowlisted MySQL classification, never driver text. */
+export class DmlDriverError extends ConnectionError {
+  readonly driverCode: string | undefined;
+
+  constructor(driverCode: string | undefined) {
+    super('Unable to execute the DML statement.');
+    this.name = 'DmlDriverError';
+    this.driverCode = driverCode;
+  }
+}
+
+function safeDriverCode(error: unknown): string | undefined {
+  try {
+    if (typeof error !== 'object' || error === null) {
+      return undefined;
+    }
+    const code = (error as { code?: unknown }).code;
+    return sanitizeDmlDriverCode(code);
+  } catch {
+    return undefined;
+  }
+}
+
 export interface PoolFactory {
   createPool(options: PoolOptions): Pool;
 }
 
 function isQueryTimeout(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    ((error as { code?: unknown }).code === 'PROTOCOL_SEQUENCE_TIMEOUT' || (error as { code?: unknown }).code === 'ETIMEDOUT')
-  );
+  try {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      ((error as { code?: unknown }).code === 'PROTOCOL_SEQUENCE_TIMEOUT' || (error as { code?: unknown }).code === 'ETIMEDOUT')
+    );
+  } catch {
+    return false;
+  }
 }
 
 declare const dmlStatementBrand: unique symbol;
@@ -223,7 +250,7 @@ export function createConnectionLayer({
           throw new QueryTimeoutError();
         }
 
-        throw new ConnectionError('Unable to execute the DML statement.');
+        throw new DmlDriverError(safeDriverCode(error));
       }
     },
   });

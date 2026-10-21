@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [#31 — feat: add sanitized audit logging and safe errors](https://github.com/VissotoFlavio/mysql-mcp-server/issues/31)
 - [#28 — feat: add structured filters with safe SQL generation](https://github.com/VissotoFlavio/mysql-mcp-server/issues/28)
 
 ## 0.1.0 - 2026-10-18
