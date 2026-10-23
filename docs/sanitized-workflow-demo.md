@@ -57,7 +57,10 @@ Integration tests are intentionally excluded from normal validation because DML 
 ```powershell
 $env:MYSQL_INTEGRATION_TEST = 'true'
 $env:MYSQL_DML_INTEGRATION_TEST = 'true'
+$env:MYSQL_DML_ENABLED = 'true'
+$env:MYSQL_DML_INTEGRATION_CONFIRM = 'isolated-database'
+$env:MYSQL_DML_INTEGRATION_TABLE = 'pre_provisioned_dml_fixture'
 npm run test:integration
 ```
 
-The test must use a dedicated temporary schema/table and clean up its own synthetic rows. Never point it at production, shared, or sensitive data.
+Before running it, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.

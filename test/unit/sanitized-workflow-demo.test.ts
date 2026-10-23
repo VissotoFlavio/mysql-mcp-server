@@ -154,6 +154,28 @@ function toolResult(response: JsonRpcResponse): unknown {
   return JSON.parse(content[0].text);
 }
 
+function assertDmlResponse(response: JsonRpcResponse, operation: string, forbiddenValues: readonly string[]) {
+  const content = response.result?.content as ReadonlyArray<{ readonly type: string; readonly text: string }>;
+  const structured = response.result?.structuredContent as Record<string, unknown>;
+  assert.equal(structured.operation, operation);
+  assert.equal(typeof structured.operationId, 'string');
+  assert.deepEqual(structured.target, { schema: 'demo_catalog', table: 'sample_records' });
+  assert.equal(typeof structured.affectedRows, 'number');
+  if (operation === 'insert') assert.ok(Object.hasOwn(structured, 'warnings'));
+  if (operation === 'update') {
+    assert.equal(typeof structured.matchedRows, 'number');
+    assert.equal(typeof structured.changedRows, 'number');
+    assert.equal(typeof structured.warningCount, 'number');
+  }
+  if (operation === 'delete') assert.equal(typeof structured.warningCount, 'number');
+  for (const value of forbiddenValues) assert.equal(JSON.stringify(structured).includes(value), false);
+  for (const value of forbiddenValues)
+    assert.equal(
+      content.some(({ text }) => text.includes(value)),
+      false,
+    );
+}
+
 test('runs the published sanitized MCP workflow', async () => {
   const application = createApplication();
   const client = await connect(application);
@@ -204,57 +226,39 @@ test('runs the published sanitized MCP workflow', async () => {
       rows: [{ id: 1, select_type: 'SIMPLE', table: 'sample_records', type: 'ALL', rows: '2', Extra: 'Using filesort' }],
     });
 
-    assert.equal(
-      (
-        toolResult(
-          await client.request('tools/call', {
-            name: 'insert_rows',
-            arguments: {
-              schema: 'demo_catalog',
-              table: 'sample_records',
-              rows: [{ label: 'synthetic example' }],
-              reason: 'Create the synthetic example record',
-            },
-          }),
-        ) as { operation: string }
-      ).operation,
-      'insert',
-    );
-    assert.equal(
-      (
-        toolResult(
-          await client.request('tools/call', {
-            name: 'update_rows',
-            arguments: {
-              schema: 'demo_catalog',
-              table: 'sample_records',
-              values: { label: 'updated synthetic example' },
-              filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
-              limit: 1,
-              reason: 'Correct the synthetic example label',
-            },
-          }),
-        ) as { operation: string }
-      ).operation,
-      'update',
-    );
-    assert.equal(
-      (
-        toolResult(
-          await client.request('tools/call', {
-            name: 'delete_rows',
-            arguments: {
-              schema: 'demo_catalog',
-              table: 'sample_records',
-              filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
-              limit: 1,
-              reason: 'Remove the synthetic example record',
-            },
-          }),
-        ) as { operation: string }
-      ).operation,
-      'delete',
-    );
+    const insertResponse = await client.request('tools/call', {
+      name: 'insert_rows',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_records',
+        rows: [{ label: 'synthetic example' }],
+        reason: 'Create the synthetic example record',
+      },
+    });
+    assertDmlResponse(insertResponse, 'insert', ['synthetic example']);
+    const updateResponse = await client.request('tools/call', {
+      name: 'update_rows',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_records',
+        values: { label: 'updated synthetic example' },
+        filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
+        limit: 1,
+        reason: 'Correct the synthetic example label',
+      },
+    });
+    assertDmlResponse(updateResponse, 'update', ['updated synthetic example']);
+    const deleteResponse = await client.request('tools/call', {
+      name: 'delete_rows',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_records',
+        filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
+        limit: 1,
+        reason: 'Remove the synthetic example record',
+      },
+    });
+    assertDmlResponse(deleteResponse, 'delete', []);
     assert.ok(auditLines.length >= 6);
     assert.equal(
       auditLines.some((line) => line.includes('2026-01-03T00:00:00.000Z') || line.includes('updated synthetic example')),
