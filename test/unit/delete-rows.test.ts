@@ -50,10 +50,15 @@ const primaryKeys = [
 ];
 
 function createApplication(
-  options: { readonly metadata?: readonly Record<string, unknown>[]; readonly execute?: (...args: unknown[]) => Promise<unknown> } = {},
+  options: {
+    readonly metadata?: readonly Record<string, unknown>[];
+    readonly execute?: (...args: unknown[]) => Promise<unknown>;
+    readonly audit?: (line: string) => void;
+  } = {},
 ) {
   return createMcpApplication({
     environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    dmlAuditWriter: options.audit,
     driver: {
       createPool() {
         return {
@@ -174,10 +179,14 @@ test('rejects missing filters, invalid limits, and tables without a primary key 
 test('sanitizes permission denial and does not retry timeout or leak filter values', async () => {
   for (const [code, expected] of [
     ['ER_TABLEACCESS_DENIED_ERROR', 'MYSQL_PERMISSION_DENIED'],
+    ['ER_ROW_IS_REFERENCED_2', 'MYSQL_FOREIGN_KEY_VIOLATION'],
     ['ETIMEDOUT', 'MYSQL_DML_OUTCOME_UNKNOWN'],
+    ['ECONNRESET', 'MYSQL_DML_OUTCOME_UNKNOWN'],
   ] as const) {
     let executions = 0;
+    const auditLines: string[] = [];
     const application = createApplication({
+      audit: (line) => auditLines.push(line),
       execute: async () => {
         executions += 1;
         throw Object.assign(new Error(`raw ${code} secret-filter`), { code });
@@ -193,6 +202,7 @@ test('sanitizes permission denial and does not retry timeout or leak filter valu
       assert.equal((response.result?.structuredContent as { code: string }).code, expected);
       assert.equal(executions, 1);
       assert.doesNotMatch(JSON.stringify(response), /secret-filter|raw/);
+      assert.doesNotMatch(auditLines.join('\n'), /secret-filter/);
     } finally {
       await client.close();
     }
