@@ -14,12 +14,18 @@ interface JsonRpcResponse {
 
 function createApplication() {
   return createMcpApplication({
-    environment: validEnvironment(),
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
     driver: {
       createPool() {
         return {
           async query(options: unknown) {
             const sql = (options as { readonly sql: string }).sql;
+
+            if (sql.includes('FROM information_schema.KEY_COLUMN_USAGE')) {
+              return [
+                [{ schemaName: 'demo_catalog', tableName: 'sample_records', constraintName: 'PRIMARY', columnName: 'record_id', ordinalPosition: 1 }],
+              ];
+            }
 
             if (sql.includes('FROM information_schema.SCHEMATA')) {
               return [[{ schemaName: 'demo_catalog' }]];
@@ -36,6 +42,8 @@ function createApplication() {
                     dataType: 'bigint',
                     isNullable: 'NO',
                     columnKey: 'PRI',
+                    ordinalPosition: 1,
+                    extra: 'auto_increment',
                   },
                   {
                     schemaName: 'demo_catalog',
@@ -45,6 +53,8 @@ function createApplication() {
                     dataType: 'datetime',
                     isNullable: 'NO',
                     columnKey: '',
+                    ordinalPosition: 2,
+                    extra: '',
                   },
                 ],
               ];
@@ -78,6 +88,10 @@ function createApplication() {
                 { name: 'created_at', typeName: 'DATETIME' },
               ],
             ];
+          },
+          async execute(options: { readonly sql: string }) {
+            if (options.sql.startsWith('INSERT ')) return [{ affectedRows: 1, insertId: 3, warningStatus: 0 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -173,6 +187,58 @@ test('runs the published sanitized MCP workflow', async () => {
       ],
       rows: [{ id: 1, select_type: 'SIMPLE', table: 'sample_records', type: 'ALL', rows: '2', Extra: 'Using filesort' }],
     });
+
+    assert.equal(
+      (
+        toolResult(
+          await client.request('tools/call', {
+            name: 'insert_rows',
+            arguments: {
+              schema: 'demo_catalog',
+              table: 'sample_records',
+              rows: [{ created_at: '2026-01-03T00:00:00.000Z' }],
+              reason: 'Create the synthetic example record',
+            },
+          }),
+        ) as { operation: string }
+      ).operation,
+      'insert',
+    );
+    assert.equal(
+      (
+        toolResult(
+          await client.request('tools/call', {
+            name: 'update_rows',
+            arguments: {
+              schema: 'demo_catalog',
+              table: 'sample_records',
+              values: { created_at: '2026-01-04T00:00:00.000Z' },
+              filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
+              limit: 1,
+              reason: 'Correct the synthetic example label',
+            },
+          }),
+        ) as { operation: string }
+      ).operation,
+      'update',
+    );
+    assert.equal(
+      (
+        toolResult(
+          await client.request('tools/call', {
+            name: 'delete_rows',
+            arguments: {
+              schema: 'demo_catalog',
+              table: 'sample_records',
+              filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
+              limit: 1,
+              reason: 'Remove the synthetic example record',
+            },
+          }),
+        ) as { operation: string }
+      ).operation,
+      'delete',
+    );
   } finally {
     await client.close();
   }
