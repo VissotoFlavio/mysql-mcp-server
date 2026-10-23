@@ -12,9 +12,13 @@ interface JsonRpcResponse {
   readonly result?: Record<string, unknown>;
 }
 
+const auditLines: string[] = [];
+
 function createApplication() {
+  auditLines.length = 0;
   return createMcpApplication({
     environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    dmlAuditWriter: (line) => auditLines.push(line),
     driver: {
       createPool() {
         return {
@@ -54,6 +58,17 @@ function createApplication() {
                     isNullable: 'NO',
                     columnKey: '',
                     ordinalPosition: 2,
+                    extra: '',
+                  },
+                  {
+                    schemaName: 'demo_catalog',
+                    tableName: 'sample_records',
+                    tableType: 'BASE TABLE',
+                    columnName: 'label',
+                    dataType: 'varchar',
+                    isNullable: 'NO',
+                    columnKey: '',
+                    ordinalPosition: 3,
                     extra: '',
                   },
                 ],
@@ -163,6 +178,7 @@ test('runs the published sanitized MCP workflow', async () => {
         columns: [
           { columnName: 'record_id', dataType: 'bigint', isNullable: false, columnKey: 'PRI' },
           { columnName: 'created_at', dataType: 'datetime', isNullable: false, columnKey: '' },
+          { columnName: 'label', dataType: 'varchar', isNullable: false, columnKey: '' },
         ],
       },
     );
@@ -196,7 +212,7 @@ test('runs the published sanitized MCP workflow', async () => {
             arguments: {
               schema: 'demo_catalog',
               table: 'sample_records',
-              rows: [{ created_at: '2026-01-03T00:00:00.000Z' }],
+              rows: [{ label: 'synthetic example' }],
               reason: 'Create the synthetic example record',
             },
           }),
@@ -212,7 +228,7 @@ test('runs the published sanitized MCP workflow', async () => {
             arguments: {
               schema: 'demo_catalog',
               table: 'sample_records',
-              values: { created_at: '2026-01-04T00:00:00.000Z' },
+              values: { label: 'updated synthetic example' },
               filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
               limit: 1,
               reason: 'Correct the synthetic example label',
@@ -238,6 +254,11 @@ test('runs the published sanitized MCP workflow', async () => {
         ) as { operation: string }
       ).operation,
       'delete',
+    );
+    assert.ok(auditLines.length >= 6);
+    assert.equal(
+      auditLines.some((line) => line.includes('2026-01-03T00:00:00.000Z') || line.includes('updated synthetic example')),
+      false,
     );
   } finally {
     await client.close();
