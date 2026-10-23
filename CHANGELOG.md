@@ -1,5 +1,7 @@
 # Changelog
 
+- [#35 — docs: consolidate DML validation and sanitized workflow](https://github.com/VissotoFlavio/mysql-mcp-server/issues/35)
+
 ## Unreleased
 
 - [#34 — feat: implement bounded delete_rows tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/34)
