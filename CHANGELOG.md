@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [#34 — feat: implement bounded delete_rows tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/34)
 - [#32 — feat: add bounded update_rows tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/32)
 - [#33 — feat: add controlled insert_rows tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/33)
 - [#31 — feat: add sanitized audit logging and safe errors](https://github.com/VissotoFlavio/mysql-mcp-server/issues/31)

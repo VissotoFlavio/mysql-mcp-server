@@ -174,14 +174,24 @@ test('registers update_rows only for DML and advertises the required risk annota
         'explain_read_only_query',
         'insert_rows',
         'update_rows',
+        'delete_rows',
       ],
     );
-    assert.deepEqual(tools.at(-1)?.annotations, { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
     assert.equal(
       disabledTools.some(({ name }) => name === 'update_rows'),
       false,
     );
-    const updateTool = tools.at(-1) as { inputSchema?: Record<string, unknown> };
+    assert.equal(
+      disabledTools.some(({ name }) => name === 'delete_rows'),
+      false,
+    );
+    const updateTool = tools.find(({ name }) => name === 'update_rows') as {
+      inputSchema?: Record<string, unknown>;
+      annotations?: Record<string, unknown>;
+    };
+    assert.deepEqual(updateTool.annotations, { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
+    const deleteTool = tools.find(({ name }) => name === 'delete_rows') as { annotations?: Record<string, unknown> };
+    assert.deepEqual(deleteTool.annotations, { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
     const inputSchema = updateTool.inputSchema as Record<string, unknown>;
     const properties = inputSchema.properties as Record<string, Record<string, unknown>>;
     const valuesSchema = properties.values;
