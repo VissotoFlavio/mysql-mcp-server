@@ -1,8 +1,8 @@
 # MySQL MCP Server
 
-`mysql-mcp-server` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for safe, bounded, read-only access to MySQL metadata, queries, and query plans, with an opt-in controlled insert capability. It runs only as a local stdio process: it does not expose an HTTP endpoint or listen on a network port.
+`mysql-mcp-server` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for safe, bounded, read-only access to MySQL metadata, queries, and query plans, with opt-in controlled `INSERT`, `UPDATE`, and `DELETE` capabilities. It runs only as a local stdio process: it does not expose an HTTP endpoint or listen on a network port.
 
-Use it with one dedicated MySQL account that has only the minimum permissions required for the enabled capabilities. When `MYSQL_DML_ENABLED=true`, that account must also have the intended `INSERT` privilege on the target objects. The server neither grants nor elevates database permissions and does not require a separate DML credential or local allowlist.
+Use it with one dedicated MySQL account that has only the minimum permissions required for the enabled capabilities. When `MYSQL_DML_ENABLED=true`, that account must also have the intended DML privileges on the target objects. The server neither grants nor elevates database permissions and does not require a separate DML credential or local allowlist.
 
 ## Project status
 
@@ -12,7 +12,7 @@ Use it with one dedicated MySQL account that has only the minimum permissions re
 
 When a developer is investigating a legacy or unfamiliar MySQL database, an AI agent needs accurate context before it can help. Manually copying schema details into a conversation is slow, becomes stale, and can expose more information than necessary.
 
-This server lets a locally connected agent inspect metadata visible to its configured account, run one bounded read-only query at a time, request an `EXPLAIN` plan for that query, and optionally perform a controlled multi-row insert. The agent can build context from permitted tool results instead of a manually maintained database dump. It does not infer relationships that the available schemas, tables, column metadata, query results, or plans do not expose.
+This server lets a locally connected agent inspect metadata visible to its configured account, run one bounded read-only query at a time, request an `EXPLAIN` plan for that query, and optionally perform controlled bounded DML. The agent can build context from permitted tool results instead of a manually maintained database dump. It does not infer relationships that the available schemas, tables, column metadata, query results, or plans do not expose.
 
 ## Use cases
 
@@ -63,24 +63,24 @@ The command above is a long-running stdio server. Its standard output is reserve
 
 All configuration is validated at startup. The values below are names and constraints, not sample credentials. Keep the values in the launching process or a local secret-managed file.
 
-| Variable                        | Required | Constraint or default                                                              |
-| ------------------------------- | -------- | ---------------------------------------------------------------------------------- |
-| `MYSQL_HOST`                    | Yes      | Hostname or IPv4 address only; no scheme, port, or path.                           |
-| `MYSQL_PORT`                    | No       | Integer 1–65535; defaults to 3306.                                                 |
-| `MYSQL_DATABASE`                | Yes      | Non-empty identifier up to 64 characters; no NUL or line breaks.                   |
-| `MYSQL_USER`                    | Yes      | Non-empty identifier up to 64 characters; no NUL or line breaks.                   |
-| `MYSQL_PASSWORD`                | Yes      | Non-empty value.                                                                   |
-| `MYSQL_POOL_LIMIT`              | No       | Integer 1–2; defaults to 2.                                                        |
-| `MYSQL_QUEUE_LIMIT`             | No       | Integer 1–100; defaults to 10.                                                     |
-| `MYSQL_CONNECT_TIMEOUT_MS`      | No       | Integer 100–60000; defaults to 5000.                                               |
-| `MYSQL_QUERY_TIMEOUT_MS`        | No       | Integer 100–60000; defaults to 30000.                                              |
-| `MYSQL_IDLE_TIMEOUT_MS`         | No       | Integer 1000–3600000; defaults to 60000.                                           |
-| `MYSQL_TLS`                     | No       | `true` enables TLS; defaults to `false`.                                           |
-| `MYSQL_TLS_REJECT_UNAUTHORIZED` | No       | May only be `true`; peer verification cannot be disabled.                          |
-| `MYSQL_TLS_CA_FILE`             | No       | Path to externally managed CA material; requires `MYSQL_TLS=true`.                 |
-| `MYSQL_TLS_CERT_FILE`           | No       | Path to externally managed client certificate material; requires `MYSQL_TLS=true`. |
-| `MYSQL_TLS_KEY_FILE`            | No       | Path to externally managed client key material; requires `MYSQL_TLS=true`.         |
-| `MYSQL_DML_ENABLED`             | No       | `true` conditionally registers `insert_rows`; defaults to `false`.                 |
+| Variable                        | Required | Constraint or default                                                                                |
+| ------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `MYSQL_HOST`                    | Yes      | Hostname or IPv4 address only; no scheme, port, or path.                                             |
+| `MYSQL_PORT`                    | No       | Integer 1–65535; defaults to 3306.                                                                   |
+| `MYSQL_DATABASE`                | Yes      | Non-empty identifier up to 64 characters; no NUL or line breaks.                                     |
+| `MYSQL_USER`                    | Yes      | Non-empty identifier up to 64 characters; no NUL or line breaks.                                     |
+| `MYSQL_PASSWORD`                | Yes      | Non-empty value.                                                                                     |
+| `MYSQL_POOL_LIMIT`              | No       | Integer 1–2; defaults to 2.                                                                          |
+| `MYSQL_QUEUE_LIMIT`             | No       | Integer 1–100; defaults to 10.                                                                       |
+| `MYSQL_CONNECT_TIMEOUT_MS`      | No       | Integer 100–60000; defaults to 5000.                                                                 |
+| `MYSQL_QUERY_TIMEOUT_MS`        | No       | Integer 100–60000; defaults to 30000.                                                                |
+| `MYSQL_IDLE_TIMEOUT_MS`         | No       | Integer 1000–3600000; defaults to 60000.                                                             |
+| `MYSQL_TLS`                     | No       | `true` enables TLS; defaults to `false`.                                                             |
+| `MYSQL_TLS_REJECT_UNAUTHORIZED` | No       | May only be `true`; peer verification cannot be disabled.                                            |
+| `MYSQL_TLS_CA_FILE`             | No       | Path to externally managed CA material; requires `MYSQL_TLS=true`.                                   |
+| `MYSQL_TLS_CERT_FILE`           | No       | Path to externally managed client certificate material; requires `MYSQL_TLS=true`.                   |
+| `MYSQL_TLS_KEY_FILE`            | No       | Path to externally managed client key material; requires `MYSQL_TLS=true`.                           |
+| `MYSQL_DML_ENABLED`             | No       | `true` conditionally registers `insert_rows`, `update_rows`, and `delete_rows`; defaults to `false`. |
 
 TLS files are read only after TLS is explicitly enabled. Startup and tool errors are intentionally safe: they guide an operator to check configuration, connectivity, parameters, or permissions without returning credentials, certificate contents, or raw database errors.
 
@@ -96,7 +96,7 @@ Those paths are placeholders, not a client-specific configuration format. Use th
 
 ## Tool contract
 
-The server registers these five read-only tools by default. When `MYSQL_DML_ENABLED=true`, it also registers the controlled `insert_rows` tool. Successful calls include `structuredContent` and a JSON text representation of the same result, so integrations can consume the documented object shapes. Metadata is deterministically ordered; query row order remains the order returned by MySQL, so clients should use SQL ordering when they require it.
+The server registers these five read-only tools by default. When `MYSQL_DML_ENABLED=true`, it also registers the controlled `insert_rows`, `update_rows`, and `delete_rows` tools. Successful calls include `structuredContent` and a JSON text representation of the same result, so integrations can consume the documented object shapes. Metadata is deterministically ordered; query row order remains the order returned by MySQL, so clients should use SQL ordering when they require it.
 
 | Tool                      | Input                                                                                                                                                                                                    | Structured result and limits                                                                                                                                                                                                                |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -106,18 +106,20 @@ The server registers these five read-only tools by default. When `MYSQL_DML_ENAB
 | `execute_read_only_query` | Exactly `{ sql, parameters }`. `sql` is 1–10000 characters; `parameters` has at most 100 JSON scalars (`string`, finite `number`, `boolean`, or `null`), with strings up to 8192 characters.             | `{ columns: [{ name, type }], rows: [...] }`; at most 100 columns, 100 rows, and 512 KiB of serialized JSON. Values are JSON-compatible; returned big integers are strings, dates are ISO timestamps, and binary values are base64 strings. |
 | `explain_read_only_query` | The same input and validation as `execute_read_only_query`. Send the SELECT or CTE itself, not an `EXPLAIN` statement.                                                                                   | The same bounded `{ columns, rows }` shape, containing the MySQL `EXPLAIN` result. It uses `EXPLAIN`, never `EXPLAIN ANALYZE`.                                                                                                              |
 | `insert_rows`             | Only when `MYSQL_DML_ENABLED=true`. Exactly `{ schema, table, rows, reason }`; 1–100 rows, shared columns, bounded payload/columns/parameters, and no generated, invisible, or `AUTO_INCREMENT` columns. | `{ operation: "insert", operationId, target, affectedRows, insertId, warnings }`; values are sent as prepared parameters, and errors are sanitized. No retry is performed.                                                                  |
+| `update_rows`             | Only when `MYSQL_DML_ENABLED=true`. Exactly `{ schema, table, values, filters, limit, reason }`; filters are required, bounded, and the limit is 1–100.                                                  | `{ operation: "update", operationId, target, affectedRows, warnings }`; values and filters are prepared parameters, and errors are sanitized. No retry is performed.                                                                        |
+| `delete_rows`             | Only when `MYSQL_DML_ENABLED=true`. Exactly `{ schema, table, filters, limit, reason }`; filters are required, bounded, and the limit is 1–100.                                                          | `{ operation: "delete", operationId, target, affectedRows, warnings }`; filters are prepared parameters, and errors are sanitized. No retry is performed.                                                                                   |
 
 For both query tools, the SQL must be one policy-approved `SELECT` or read-only CTE and must contain a literal `LIMIT` from 0 through 100. Bind values through `parameters`; a parameter cannot replace the required literal `LIMIT`. Invalid SQL, oversized results, timeouts, unavailable objects, and connection failures return a safe MCP error result rather than an unfiltered driver error. `insert_rows` uses one prepared `INSERT` statement with escaped identifiers and bound values; MySQL remains the final authority for permissions and constraints, and the server does not use an application allowlist or `SHOW GRANTS` as a substitute.
 
 ## Read-only and controlled-write boundary
 
-This is not a general SQL administration channel. The query and plan tools reject writes, DDL, administrative statements, multiple statements, unsafe `SELECT` forms, locking reads, and `EXPLAIN ANALYZE`. Multiple statements are also disabled in the MySQL driver. Metadata operations query `information_schema` only. `insert_rows` is the sole write path, is disabled by default, and does not provide arbitrary SQL, schema changes, permission changes, unbounded export, HTTP hosting, or credential management. Its metadata preflight is advisory across a possible TOCTOU window; MySQL remains authoritative, and failed or uncertain writes are never retried automatically.
+This is not a general SQL administration channel. The query and plan tools reject writes, DDL, administrative statements, multiple statements, unsafe `SELECT` forms, locking reads, and `EXPLAIN ANALYZE`. Multiple statements are also disabled in the MySQL driver. Metadata operations query `information_schema` only. The three DML tools are the only write paths, are disabled by default, and do not provide arbitrary SQL, schema changes, permission changes, unbounded export, HTTP hosting, or credential management. Their metadata preflight is advisory across a possible TOCTOU window; MySQL remains authoritative, and failed or uncertain writes are never retried automatically.
 
 ## Security considerations
 
 The read-only policy is defense in depth. It is not a replacement for authorization, data classification, network isolation, auditing, monitoring, or an access-review process. The database account remains the authority for what the server can see.
 
-Enabling `insert_rows` grants the connected agent a bounded write capability. Review the database account's effective permissions and audit the target tables and writes; preflight metadata cannot eliminate changes between validation and execution (TOCTOU), and sanitized errors do not make a write safe to repeat.
+Enabling `MYSQL_DML_ENABLED` grants the connected agent bounded write capabilities. Review the database account's effective permissions and audit the target tables and writes; preflight metadata cannot eliminate changes between validation and execution (TOCTOU), and sanitized errors do not make a write safe to repeat.
 
 An allowed `SELECT` can still reveal sensitive information and consume database resources. The required `LIMIT` bounds returned rows, not the rows that MySQL must scan or the query's execution cost. This server does not provide data masking, relationship inference, query-cost enforcement, or a guarantee that a workload is suitable for production.
 
@@ -139,7 +141,7 @@ npm run lint
 npm test
 ```
 
-Integration tests are opt-in and are not part of the normal local validation. They acquire a connection and perform read-only metadata discovery; they do not mutate data. With required MySQL configuration supplied externally, set `MYSQL_INTEGRATION_TEST` to `true`. Set `MYSQL_INTEGRATION_TABLE` to one accessible table or view, and set `MYSQL_INTEGRATION_SCHEMA` only when it differs from `MYSQL_DATABASE`, then run:
+Integration tests are opt-in and are not part of the normal local validation. The metadata integration test is read-only. The DML integration contract is documented in [the sanitized workflow](docs/sanitized-workflow-demo.md) and must run only against an isolated disposable database because it mutates data. With required MySQL configuration supplied externally, set `MYSQL_INTEGRATION_TEST` to `true`. Set `MYSQL_INTEGRATION_TABLE` to one accessible table or view, and set `MYSQL_INTEGRATION_SCHEMA` only when it differs from `MYSQL_DATABASE`, then run:
 
 ```bash
 npm run test:integration
