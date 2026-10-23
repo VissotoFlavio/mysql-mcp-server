@@ -6,6 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 import { type Environment, type ReadFile } from './config.js';
 import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
+import { registerDeleteRowsTool } from './tools/delete-rows.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerExplainQueryTool } from './tools/explain.js';
@@ -40,6 +41,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   if (mysql.dmlEnabled) {
     registerInsertRowsTool(server, mysql);
     registerUpdateRowsTool(server, mysql);
+    registerDeleteRowsTool(server, mysql);
   }
 
   return Object.freeze({
