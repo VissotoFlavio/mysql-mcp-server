@@ -17,7 +17,7 @@ import { registerUpdateRowsTool } from './tools/update-rows.js';
 
 const SERVER_INFO = Object.freeze({
   name: 'mysql-mcp-server',
-  version: '0.1.0',
+  version: '0.2.0',
 });
 
 export interface McpApplicationOptions {
