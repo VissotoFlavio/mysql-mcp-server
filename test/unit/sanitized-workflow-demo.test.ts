@@ -159,6 +159,7 @@ function assertDmlResponse(response: JsonRpcResponse, operation: string, forbidd
   const structured = response.result?.structuredContent as Record<string, unknown>;
   assert.equal(structured.operation, operation);
   assert.equal(typeof structured.operationId, 'string');
+  if (operation === 'insert') assert.match(String(structured.insertId), /^\d+$/);
   assert.deepEqual(structured.target, { schema: 'demo_catalog', table: 'sample_records' });
   assert.equal(typeof structured.affectedRows, 'number');
   if (operation === 'insert') assert.ok(Object.hasOwn(structured, 'warnings'));
@@ -232,7 +233,7 @@ test('runs the published sanitized MCP workflow', async () => {
         schema: 'demo_catalog',
         table: 'sample_records',
         rows: [{ label: 'synthetic example' }],
-        reason: 'Create the synthetic example record',
+        reason: 'Create the example record',
       },
     });
     assertDmlResponse(insertResponse, 'insert', ['synthetic example']);
@@ -244,10 +245,10 @@ test('runs the published sanitized MCP workflow', async () => {
         values: { label: 'updated synthetic example' },
         filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
         limit: 1,
-        reason: 'Correct the synthetic example label',
+        reason: 'Correct the example label',
       },
     });
-    assertDmlResponse(updateResponse, 'update', ['updated synthetic example']);
+    assertDmlResponse(updateResponse, 'update', ['synthetic example', 'updated synthetic example']);
     const deleteResponse = await client.request('tools/call', {
       name: 'delete_rows',
       arguments: {
@@ -255,15 +256,24 @@ test('runs the published sanitized MCP workflow', async () => {
         table: 'sample_records',
         filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
         limit: 1,
-        reason: 'Remove the synthetic example record',
+        reason: 'Remove the example record',
       },
     });
     assertDmlResponse(deleteResponse, 'delete', []);
     assert.ok(auditLines.length >= 6);
-    assert.equal(
-      auditLines.some((line) => line.includes('2026-01-03T00:00:00.000Z') || line.includes('updated synthetic example')),
-      false,
-    );
+    for (const value of ['synthetic example', 'updated synthetic example']) {
+      assert.equal(
+        auditLines.some((line) => line.includes(value)),
+        false,
+      );
+      assert.equal(
+        [insertResponse, updateResponse, deleteResponse].some((response) => {
+          const content = response.result?.content as ReadonlyArray<{ readonly text: string }>;
+          return content.some(({ text }) => text.includes(value));
+        }),
+        false,
+      );
+    }
   } finally {
     await client.close();
   }

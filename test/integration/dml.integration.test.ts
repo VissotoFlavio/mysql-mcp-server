@@ -25,7 +25,7 @@ test('runs the opt-in DML contract against a pre-provisioned isolated table', { 
     password: process.env.MYSQL_PASSWORD,
   });
   const application = createMcpApplication();
-  let insertId: number | undefined;
+  let insertId: string | undefined;
   const [client, server] = InMemoryTransport.createLinkedPair();
   const pending = new Map<number, (response: { result?: Record<string, unknown> }) => void>();
   let requestId = 0;
@@ -53,7 +53,7 @@ test('runs the opt-in DML contract against a pre-provisioned isolated table', { 
     const args = { schema, table, reason: 'isolated opt-in integration test' };
     const insert = await request('tools/call', { name: 'insert_rows', arguments: { ...args, rows: [{ label: `synthetic-${process.pid}` }] } });
     assert.equal((insert.result?.structuredContent as { operation: string }).operation, 'insert');
-    insertId = (insert.result?.structuredContent as { insertId: number }).insertId;
+    insertId = (insert.result?.structuredContent as { insertId: string }).insertId;
     const update = await request('tools/call', {
       name: 'update_rows',
       arguments: {

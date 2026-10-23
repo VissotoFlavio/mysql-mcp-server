@@ -14,7 +14,7 @@ This example is intentionally synthetic. It contains no credentials, hostnames, 
     "schema": "demo_catalog",
     "table": "sample_records",
     "rows": [{ "label": "synthetic example" }],
-    "reason": "Create the synthetic example record"
+    "reason": "Create the example record"
   }
 }
 ```
@@ -28,7 +28,7 @@ This example is intentionally synthetic. It contains no credentials, hostnames, 
     "values": { "label": "updated synthetic example" },
     "filters": [{ "column": "record_id", "operator": "eq", "value": 1 }],
     "limit": 1,
-    "reason": "Correct the synthetic example label"
+    "reason": "Correct the example label"
   }
 }
 ```
@@ -41,7 +41,7 @@ This example is intentionally synthetic. It contains no credentials, hostnames, 
     "table": "sample_records",
     "filters": [{ "column": "record_id", "operator": "eq", "value": 1 }],
     "limit": 1,
-    "reason": "Remove the synthetic example record"
+    "reason": "Remove the example record"
   }
 }
 ```
@@ -63,4 +63,4 @@ $env:MYSQL_DML_INTEGRATION_TABLE = 'pre_provisioned_dml_fixture'
 npm run test:integration
 ```
 
-Before running it, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
+The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
