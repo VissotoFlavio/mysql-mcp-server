@@ -1,11 +1,12 @@
-# Sanitized DML workflow
+# Sanitized DML agent workflow
 
 This example is intentionally synthetic. It contains no credentials, hostnames, internal identifiers, or production data.
 
 1. Start the server with `MYSQL_DML_ENABLED=true` and credentials supplied by the process environment or a secret manager.
-2. Discover the permitted schemas, tables, and columns with the five read-only tools.
-3. Review the target object and the exact bounded operation with an operator.
-4. Call one DML tool with a short reason:
+2. Confirm that the MCP session advertises the DML tool to use. If it does not, DML is disabled and the agent must not substitute arbitrary SQL.
+3. Discover the permitted schemas, tables, and columns with the five read-only tools. The configured account's MySQL permissions, not MCP discovery, remain the authority for whether a write will succeed.
+4. Present the schema, table, values, filters, limit, and short audit reason to an operator. Execute only after the user has requested or confirmed that exact bounded change.
+5. Call one DML tool with the confirmed reason:
 
 ```json
 {
@@ -46,7 +47,9 @@ This example is intentionally synthetic. It contains no credentials, hostnames, 
 }
 ```
 
-The response includes an `operationId`, target, affected-row count, and sanitized outcome. `MYSQL_PERMISSION_DENIED` means MySQL rejected the operation; it does not mean the server can grant access. `MYSQL_DML_OUTCOME_UNKNOWN` means the request may have reached MySQL, so verify state before retrying. The server never retries automatically.
+Successful DML results always include `operation`, `operationId`, and `target`. `insert_rows` also returns `affectedRows`, `insertId`, and `warnings`; `update_rows` returns `matchedRows`, `affectedRows`, `changedRows`, and `warningCount`; `delete_rows` returns `affectedRows` and `warningCount`. A zero row count is a result to report, not evidence that the intended record exists or changed.
+
+After a known successful write, use a bounded read-only query when practical to verify the expected state. `MYSQL_PERMISSION_DENIED` means MySQL rejected the operation; it does not mean the server can grant access. `MYSQL_DML_OUTCOME_UNKNOWN` or `retryAdvice: "VERIFY_STATE_BEFORE_RETRYING"` means the request may have reached MySQL, so verify the state with a read-only query and obtain operator direction before another write. The server never retries automatically.
 
 The MCP layer validates identifiers, columns, filters, bounds, and payloads. MySQL remains the authorization and constraint authority. There is no local table allowlist and no separate DML credential. The configured account must have only the permissions appropriate for the enabled workflow.
 
