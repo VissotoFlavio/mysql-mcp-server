@@ -5,25 +5,30 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 import { type Environment, type ReadFile } from './config.js';
-import { createConnectionLayer, type ConnectionLayer, type PoolFactory } from './db/pool.js';
+import type { DmlAuditWriter } from './db/dml-audit.js';
+import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
+import { registerDeleteRowsTool } from './tools/delete-rows.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerExplainQueryTool } from './tools/explain.js';
+import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
+import { registerUpdateRowsTool } from './tools/update-rows.js';
 
 const SERVER_INFO = Object.freeze({
   name: 'mysql-mcp-server',
-  version: '0.1.0',
+  version: '0.2.0',
 });
 
 export interface McpApplicationOptions {
   readonly environment?: Environment;
   readonly driver?: PoolFactory;
   readonly readFile?: ReadFile;
+  readonly dmlAuditWriter?: DmlAuditWriter;
 }
 
 export interface McpApplication {
-  readonly mysql: ConnectionLayer;
+  readonly mysql: ConnectionLayerBundle;
   readonly server: McpServer;
   close(): Promise<void>;
 }
@@ -35,6 +40,11 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   registerDescribeTableTool(server, mysql);
   registerReadOnlyQueryTool(server, mysql);
   registerExplainQueryTool(server, mysql);
+  if (mysql.dmlEnabled) {
+    registerInsertRowsTool(server, mysql);
+    registerUpdateRowsTool(server, mysql);
+    registerDeleteRowsTool(server, mysql);
+  }
 
   return Object.freeze({
     mysql,

@@ -12,14 +12,24 @@ interface JsonRpcResponse {
   readonly result?: Record<string, unknown>;
 }
 
+const auditLines: string[] = [];
+
 function createApplication() {
+  auditLines.length = 0;
   return createMcpApplication({
-    environment: validEnvironment(),
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    dmlAuditWriter: (line) => auditLines.push(line),
     driver: {
       createPool() {
         return {
           async query(options: unknown) {
             const sql = (options as { readonly sql: string }).sql;
+
+            if (sql.includes('FROM information_schema.KEY_COLUMN_USAGE')) {
+              return [
+                [{ schemaName: 'demo_catalog', tableName: 'sample_records', constraintName: 'PRIMARY', columnName: 'record_id', ordinalPosition: 1 }],
+              ];
+            }
 
             if (sql.includes('FROM information_schema.SCHEMATA')) {
               return [[{ schemaName: 'demo_catalog' }]];
@@ -36,6 +46,8 @@ function createApplication() {
                     dataType: 'bigint',
                     isNullable: 'NO',
                     columnKey: 'PRI',
+                    ordinalPosition: 1,
+                    extra: 'auto_increment',
                   },
                   {
                     schemaName: 'demo_catalog',
@@ -45,6 +57,19 @@ function createApplication() {
                     dataType: 'datetime',
                     isNullable: 'NO',
                     columnKey: '',
+                    ordinalPosition: 2,
+                    extra: '',
+                  },
+                  {
+                    schemaName: 'demo_catalog',
+                    tableName: 'sample_records',
+                    tableType: 'BASE TABLE',
+                    columnName: 'label',
+                    dataType: 'varchar',
+                    isNullable: 'NO',
+                    columnKey: '',
+                    ordinalPosition: 3,
+                    extra: '',
                   },
                 ],
               ];
@@ -78,6 +103,10 @@ function createApplication() {
                 { name: 'created_at', typeName: 'DATETIME' },
               ],
             ];
+          },
+          async execute(options: { readonly sql: string }) {
+            if (options.sql.startsWith('INSERT ')) return [{ affectedRows: 1, insertId: 3, warningStatus: 0 }, []];
+            return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
           async end() {},
         } as never;
@@ -125,6 +154,29 @@ function toolResult(response: JsonRpcResponse): unknown {
   return JSON.parse(content[0].text);
 }
 
+function assertDmlResponse(response: JsonRpcResponse, operation: string, forbiddenValues: readonly string[]) {
+  const content = response.result?.content as ReadonlyArray<{ readonly type: string; readonly text: string }>;
+  const structured = response.result?.structuredContent as Record<string, unknown>;
+  assert.equal(structured.operation, operation);
+  assert.equal(typeof structured.operationId, 'string');
+  if (operation === 'insert') assert.match(String(structured.insertId), /^\d+$/);
+  assert.deepEqual(structured.target, { schema: 'demo_catalog', table: 'sample_records' });
+  assert.equal(typeof structured.affectedRows, 'number');
+  if (operation === 'insert') assert.ok(Object.hasOwn(structured, 'warnings'));
+  if (operation === 'update') {
+    assert.equal(typeof structured.matchedRows, 'number');
+    assert.equal(typeof structured.changedRows, 'number');
+    assert.equal(typeof structured.warningCount, 'number');
+  }
+  if (operation === 'delete') assert.equal(typeof structured.warningCount, 'number');
+  for (const value of forbiddenValues) assert.equal(JSON.stringify(structured).includes(value), false);
+  for (const value of forbiddenValues)
+    assert.equal(
+      content.some(({ text }) => text.includes(value)),
+      false,
+    );
+}
+
 test('runs the published sanitized MCP workflow', async () => {
   const application = createApplication();
   const client = await connect(application);
@@ -149,6 +201,7 @@ test('runs the published sanitized MCP workflow', async () => {
         columns: [
           { columnName: 'record_id', dataType: 'bigint', isNullable: false, columnKey: 'PRI' },
           { columnName: 'created_at', dataType: 'datetime', isNullable: false, columnKey: '' },
+          { columnName: 'label', dataType: 'varchar', isNullable: false, columnKey: '' },
         ],
       },
     );
@@ -173,6 +226,54 @@ test('runs the published sanitized MCP workflow', async () => {
       ],
       rows: [{ id: 1, select_type: 'SIMPLE', table: 'sample_records', type: 'ALL', rows: '2', Extra: 'Using filesort' }],
     });
+
+    const insertResponse = await client.request('tools/call', {
+      name: 'insert_rows',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_records',
+        rows: [{ label: 'synthetic example' }],
+        reason: 'Create the example record',
+      },
+    });
+    assertDmlResponse(insertResponse, 'insert', ['synthetic example']);
+    const updateResponse = await client.request('tools/call', {
+      name: 'update_rows',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_records',
+        values: { label: 'updated synthetic example' },
+        filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
+        limit: 1,
+        reason: 'Correct the example label',
+      },
+    });
+    assertDmlResponse(updateResponse, 'update', ['synthetic example', 'updated synthetic example']);
+    const deleteResponse = await client.request('tools/call', {
+      name: 'delete_rows',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_records',
+        filters: [{ column: 'record_id', operator: 'eq', value: 1 }],
+        limit: 1,
+        reason: 'Remove the example record',
+      },
+    });
+    assertDmlResponse(deleteResponse, 'delete', []);
+    assert.ok(auditLines.length >= 6);
+    for (const value of ['synthetic example', 'updated synthetic example']) {
+      assert.equal(
+        auditLines.some((line) => line.includes(value)),
+        false,
+      );
+      assert.equal(
+        [insertResponse, updateResponse, deleteResponse].some((response) => {
+          const content = response.result?.content as ReadonlyArray<{ readonly text: string }>;
+          return content.some(({ text }) => text.includes(value));
+        }),
+        false,
+      );
+    }
   } finally {
     await client.close();
   }

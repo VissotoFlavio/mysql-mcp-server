@@ -12,6 +12,15 @@ export class SqlPolicyError extends Error {
   }
 }
 
+export class DmlPolicyError extends Error {
+  readonly code = 'MYSQL_SQL_NOT_DML';
+
+  constructor() {
+    super('Only one top-level DML statement is allowed.');
+    this.name = 'DmlPolicyError';
+  }
+}
+
 type AstNode = Readonly<Record<string, unknown>>;
 
 function isAstNode(value: unknown): value is AstNode {
@@ -139,6 +148,19 @@ function parseStatement(sql: string): AstNode {
 export function assertReadOnlySql(sql: string): void {
   if (!isSafeStatement(parseStatement(sql))) {
     throw new SqlPolicyError();
+  }
+}
+
+export function assertDmlSql(sql: string): void {
+  let statement: AstNode;
+  try {
+    statement = parseStatement(sql);
+  } catch {
+    throw new DmlPolicyError();
+  }
+
+  if (statement.type !== 'insert' && statement.type !== 'update' && statement.type !== 'delete') {
+    throw new DmlPolicyError();
   }
 }
 

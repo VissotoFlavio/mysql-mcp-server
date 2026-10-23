@@ -14,7 +14,14 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.queueLimit, DEFAULTS.queueLimit);
   assert.equal(config.connectTimeoutMs, DEFAULTS.connectTimeoutMs);
   assert.equal(config.queryTimeoutMs, 30_000);
+  assert.equal(config.dmlEnabled, false);
   assert.equal(config.tls, undefined);
+});
+
+test('loads the DML opt-in flag only for explicit boolean values', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DML_ENABLED: 'false' })).dmlEnabled, false);
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DML_ENABLED: 'true' })).dmlEnabled, true);
+  assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_DML_ENABLED: 'TRUE' })), /MYSQL_DML_ENABLED must be true or false/);
 });
 
 test('rejects each required connection setting when missing', () => {
