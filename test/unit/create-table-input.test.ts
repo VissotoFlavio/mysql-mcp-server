@@ -84,6 +84,30 @@ test('normalizes all supported structured MySQL 8.4 types without accepting SQL 
   );
 });
 
+test('enforces numeric and temporal precision boundaries before any SQL generation', () => {
+  const validEndpoints: readonly { readonly name: string; readonly type: unknown }[] = [
+    { name: 'decimal_maximum', type: { kind: 'decimal', precision: 65, scale: 30 } },
+    { name: 'time_minimum', type: { kind: 'time', fractionalSecondsPrecision: 0 } },
+    { name: 'timestamp_maximum', type: { kind: 'timestamp', fractionalSecondsPrecision: 6 } },
+  ];
+  for (const { name, type } of validEndpoints) {
+    const normalized = normalizeCreateTableInput({ ...input(), columns: [{ name, type, nullable: false }], primaryKey: [name] });
+    assert.deepEqual(normalized.columns[0].type, type);
+  }
+
+  const rejectedBoundaries: readonly { readonly type: unknown; readonly path: string }[] = [
+    { type: { kind: 'decimal', precision: 66, scale: 0 }, path: 'input.columns[0].type.precision' },
+    { type: { kind: 'decimal', precision: 1, scale: -1 }, path: 'input.columns[0].type.scale' },
+    { type: { kind: 'decimal', precision: 3, scale: 4 }, path: 'input.columns[0].type.scale' },
+    { type: { kind: 'time', fractionalSecondsPrecision: -1 }, path: 'input.columns[0].type.fractionalSecondsPrecision' },
+  ];
+  for (const { type, path } of rejectedBoundaries) {
+    const error = errorOf(() => normalizeCreateTableInput({ ...input(), columns: [{ name: 'id', type, nullable: false }], primaryKey: ['id'] }));
+    assert.equal(error.code, 'invalid_value');
+    assert.equal(error.path, path);
+  }
+});
+
 test('rejects unsupported options and enforces precise per-type limits', () => {
   const invalidTypes = [
     { kind: 'integer', integerType: 'integer' },
