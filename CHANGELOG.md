@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#50 — feat: validate structured CREATE TABLE specifications](https://github.com/VissotoFlavio/mysql-mcp-server/issues/50)
+
 ## 0.2.0 - 2026-10-23
 
 - [#35 — docs: consolidate DML validation and sanitized workflow](https://github.com/VissotoFlavio/mysql-mcp-server/issues/35)
