@@ -247,6 +247,7 @@ export interface ConnectionLayer {
 
 export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dmlEnabled: boolean;
+  readonly ddlEnabled: boolean;
   readonly dml: DmlConnectionLayer;
 }
 
@@ -517,6 +518,7 @@ export function createConnectionLayer({
 
   return Object.freeze({
     dmlEnabled: config.dmlEnabled,
+    ddlEnabled: config.ddlEnabled,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
     async query<T extends QueryResult>(
