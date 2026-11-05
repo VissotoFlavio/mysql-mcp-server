@@ -5,7 +5,9 @@ import { loadConnectionConfig, type ConnectionConfig, type Environment, type Rea
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 
+import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
 import { buildCreateTableStatement } from './ddl-builder.js';
+import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
 import type { DmlAuditAttempt, DmlAuditRequest, DmlAuditWriter } from './dml-audit.js';
 import {
   buildDeleteStatement,
@@ -68,6 +70,17 @@ export class DmlDriverError extends ConnectionError {
   }
 }
 
+/** @internal Carries only an allowlisted MySQL classification, never driver text. */
+export class DdlDriverError extends ConnectionError {
+  readonly driverCode: string | undefined;
+
+  constructor(driverCode: string | undefined, submitted = false) {
+    super('Unable to execute the CREATE TABLE statement.', submitted);
+    this.name = 'DdlDriverError';
+    this.driverCode = driverCode;
+  }
+}
+
 export class DmlResultError extends ConnectionError {
   readonly code = 'MYSQL_DML_RESULT_INVALID';
 
@@ -123,6 +136,24 @@ function safeDriverCode(error: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function safeDdlDriverCode(error: unknown): string | undefined {
+  try {
+    if (typeof error !== 'object' || error === null) return undefined;
+    for (const key of ['code', 'errno']) {
+      try {
+        if (!Object.hasOwn(error, key)) continue;
+        const sanitized = sanitizeDdlDriverCode((error as Record<string, unknown>)[key]);
+        if (sanitized !== undefined) return sanitized;
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    /* safe fallback */
+  }
+  return undefined;
 }
 
 export interface PoolFactory {
@@ -313,18 +344,20 @@ interface DmlStatementData {
 }
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
-const ddlStatementRegistry = new WeakMap<CreateTableStatement, Readonly<{ sql: string }>>();
+const ddlStatementRegistry = new WeakMap<CreateTableStatement, Readonly<{ sql: string; input: CreateTableInput }>>();
 
 /** Creates the only executable DDL capability, from a freshly normalized structured input. */
 export function createCreateTableStatement(input: CreateTableInput): CreateTableStatement {
   let sql: string;
+  let normalized: CreateTableInput;
   try {
-    sql = buildCreateTableStatement(normalizeCreateTableInput(input)).sql;
+    normalized = normalizeCreateTableInput(input);
+    sql = buildCreateTableStatement(normalized).sql;
   } catch {
     throw new DdlPolicyError();
   }
   const statement = Object.freeze({}) as CreateTableStatement;
-  ddlStatementRegistry.set(statement, Object.freeze({ sql }));
+  ddlStatementRegistry.set(statement, Object.freeze({ sql, input: normalized }));
   return statement;
 }
 
@@ -497,7 +530,14 @@ export function createConnectionLayer({
   driver = mysql,
   readFile,
   dmlAuditWriter,
-}: Readonly<{ environment?: Environment; driver?: PoolFactory; readFile?: ReadFile; dmlAuditWriter?: DmlAuditWriter }> = {}): ConnectionLayerBundle {
+  ddlAuditWriter,
+}: Readonly<{
+  environment?: Environment;
+  driver?: PoolFactory;
+  readFile?: ReadFile;
+  dmlAuditWriter?: DmlAuditWriter;
+  ddlAuditWriter?: DdlAuditWriter;
+}> = {}): ConnectionLayerBundle {
   const config = loadConnectionConfig(environment, { readFile });
   const pool = createPool(config, driver);
   const queryOptions = Object.freeze({ timeout: config.queryTimeoutMs });
@@ -587,30 +627,44 @@ export function createConnectionLayer({
 
   const ddl: DdlConnectionLayer = Object.freeze({
     async executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult> {
-      if (!config.ddlEnabled) {
-        throw new DdlDisabledError();
+      let statementData: Readonly<{ sql: string; input: CreateTableInput }> | undefined;
+      let auditRequest: CreateTableInput | undefined;
+      try {
+        if (typeof statement === 'object' && statement !== null && ddlStatementRegistry.has(statement))
+          statementData = ddlStatementRegistry.get(statement);
+        if (statementData !== undefined) auditRequest = statementData.input;
+      } catch {
+        statementData = undefined;
+        auditRequest = undefined;
       }
 
-      let statementData: Readonly<{ sql: string }> | undefined;
+      let audit: DdlAuditAttempt;
       try {
-        if (typeof statement !== 'object' || statement === null || !ddlStatementRegistry.has(statement)) {
-          throw new DdlPolicyError();
-        }
-        statementData = ddlStatementRegistry.get(statement);
+        audit = (await import('./ddl-audit.js')).createDdlAuditAttempt(auditRequest, { writer: ddlAuditWriter });
+      } catch {
+        throw new ConnectionError('The DDL audit could not be started.');
+      }
+
+      let submitted = false;
+      try {
+        if (!config.ddlEnabled) throw new DdlDisabledError();
         if (statementData === undefined) throw new DdlPolicyError();
-      } catch (error) {
-        if (safeInstanceOf(error, DdlPolicyError)) throw error;
-        throw new DdlPolicyError();
-      }
-
-      try {
         assertCreateTableSql(statementData.sql);
+        audit.markSubmitted();
+        submitted = true;
         const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
-        return normalizeCreateTableResult(result);
+        const normalizedResult = normalizeCreateTableResult(result);
+        audit.emit();
+        return normalizedResult;
       } catch (error) {
-        if (isQueryTimeout(error)) throw new QueryTimeoutError(true);
-        if (safeInstanceOf(error, DdlResultError) || safeInstanceOf(error, DdlPolicyError)) throw error;
-        throw new ConnectionError('Unable to execute the CREATE TABLE statement.', true);
+        let safeError: unknown;
+        if (isQueryTimeout(error)) safeError = new QueryTimeoutError(submitted);
+        else if (isTransportLoss(error)) safeError = new ConnectionError('Unable to execute the CREATE TABLE statement.', submitted);
+        else if (safeInstanceOf(error, DdlResultError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlDisabledError))
+          safeError = error;
+        else safeError = new DdlDriverError(safeDdlDriverCode(error), submitted);
+        audit.emit({ error: safeError });
+        throw safeError;
       }
     },
   });

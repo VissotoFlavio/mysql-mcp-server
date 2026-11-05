@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#52 — feat: add sanitized DDL auditing and outcomes](https://github.com/VissotoFlavio/mysql-mcp-server/issues/52)
+
 - [#51 — feat: add capability-bound CREATE TABLE execution](https://github.com/VissotoFlavio/mysql-mcp-server/issues/51)
 
 - [#50 — feat: validate structured CREATE TABLE specifications](https://github.com/VissotoFlavio/mysql-mcp-server/issues/50)
