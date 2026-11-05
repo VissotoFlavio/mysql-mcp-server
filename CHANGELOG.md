@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#53 — feat: expose controlled create_table MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/53)
+
 - [#52 — feat: add sanitized DDL auditing and outcomes](https://github.com/VissotoFlavio/mysql-mcp-server/issues/52)
 
 - [#51 — feat: add capability-bound CREATE TABLE execution](https://github.com/VissotoFlavio/mysql-mcp-server/issues/51)

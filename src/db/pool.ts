@@ -115,6 +115,11 @@ export function wasDmlSubmitted(error: unknown): boolean {
   }
 }
 
+/** Indicates whether a controlled DDL request may have reached MySQL. */
+export function wasDdlSubmitted(error: unknown): boolean {
+  return wasDmlSubmitted(error);
+}
+
 const MYSQL_BIGINT_UNSIGNED_MAX = 18446744073709551615n;
 const MYSQL_BIGINT_SIGNED_MIN = -9223372036854775808n;
 
@@ -317,6 +322,7 @@ export interface DmlConnectionLayer {
 
 export interface DdlConnectionLayer {
   executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult>;
+  executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
 }
 
 export interface ConnectionLayer {
@@ -625,48 +631,54 @@ export function createConnectionLayer({
     },
   });
 
+  async function executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]> {
+    let statementData: Readonly<{ sql: string; input: CreateTableInput }> | undefined;
+    let auditRequest: CreateTableInput | undefined;
+    try {
+      if (typeof statement === 'object' && statement !== null && ddlStatementRegistry.has(statement))
+        statementData = ddlStatementRegistry.get(statement);
+      if (statementData !== undefined) auditRequest = statementData.input;
+    } catch {
+      statementData = undefined;
+      auditRequest = undefined;
+    }
+
+    let audit: DdlAuditAttempt;
+    try {
+      audit = (await import('./ddl-audit.js')).createDdlAuditAttempt(auditRequest, { writer: ddlAuditWriter });
+    } catch {
+      throw new ConnectionError('The DDL audit could not be started.');
+    }
+
+    let submitted = false;
+    try {
+      if (!config.ddlEnabled) throw new DdlDisabledError();
+      if (statementData === undefined) throw new DdlPolicyError();
+      assertCreateTableSql(statementData.sql);
+      audit.markSubmitted();
+      submitted = true;
+      const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
+      const normalizedResult = normalizeCreateTableResult(result);
+      audit.emit();
+      return [normalizedResult, audit.operationId];
+    } catch (error) {
+      let safeError: unknown;
+      if (isQueryTimeout(error)) safeError = new QueryTimeoutError(submitted);
+      else if (isTransportLoss(error)) safeError = new ConnectionError('Unable to execute the CREATE TABLE statement.', submitted);
+      else if (safeInstanceOf(error, DdlResultError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlDisabledError))
+        safeError = error;
+      else safeError = new DdlDriverError(safeDdlDriverCode(error), submitted);
+      audit.emit({ error: safeError });
+      throw safeError;
+    }
+  }
+
   const ddl: DdlConnectionLayer = Object.freeze({
     async executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult> {
-      let statementData: Readonly<{ sql: string; input: CreateTableInput }> | undefined;
-      let auditRequest: CreateTableInput | undefined;
-      try {
-        if (typeof statement === 'object' && statement !== null && ddlStatementRegistry.has(statement))
-          statementData = ddlStatementRegistry.get(statement);
-        if (statementData !== undefined) auditRequest = statementData.input;
-      } catch {
-        statementData = undefined;
-        auditRequest = undefined;
-      }
-
-      let audit: DdlAuditAttempt;
-      try {
-        audit = (await import('./ddl-audit.js')).createDdlAuditAttempt(auditRequest, { writer: ddlAuditWriter });
-      } catch {
-        throw new ConnectionError('The DDL audit could not be started.');
-      }
-
-      let submitted = false;
-      try {
-        if (!config.ddlEnabled) throw new DdlDisabledError();
-        if (statementData === undefined) throw new DdlPolicyError();
-        assertCreateTableSql(statementData.sql);
-        audit.markSubmitted();
-        submitted = true;
-        const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
-        const normalizedResult = normalizeCreateTableResult(result);
-        audit.emit();
-        return normalizedResult;
-      } catch (error) {
-        let safeError: unknown;
-        if (isQueryTimeout(error)) safeError = new QueryTimeoutError(submitted);
-        else if (isTransportLoss(error)) safeError = new ConnectionError('Unable to execute the CREATE TABLE statement.', submitted);
-        else if (safeInstanceOf(error, DdlResultError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlDisabledError))
-          safeError = error;
-        else safeError = new DdlDriverError(safeDdlDriverCode(error), submitted);
-        audit.emit({ error: safeError });
-        throw safeError;
-      }
+      const [result] = await executeCreateTableWithOperationId(statement);
+      return result;
     },
+    executeCreateTableWithOperationId,
   });
 
   return Object.freeze({
