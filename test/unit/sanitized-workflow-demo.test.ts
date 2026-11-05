@@ -13,12 +13,15 @@ interface JsonRpcResponse {
 }
 
 const auditLines: string[] = [];
+const ddlAuditLines: string[] = [];
 
 function createApplication() {
   auditLines.length = 0;
+  ddlAuditLines.length = 0;
   return createMcpApplication({
-    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true' }),
+    environment: validEnvironment({ MYSQL_DML_ENABLED: 'true', MYSQL_DDL_ENABLED: 'true' }),
     dmlAuditWriter: (line) => auditLines.push(line),
+    ddlAuditWriter: (line) => ddlAuditLines.push(line),
     driver: {
       createPool() {
         return {
@@ -105,6 +108,7 @@ function createApplication() {
             ];
           },
           async execute(options: { readonly sql: string }) {
+            if (options.sql.startsWith('CREATE TABLE ')) return [{ affectedRows: 0, warningStatus: 0 }, []];
             if (options.sql.startsWith('INSERT ')) return [{ affectedRows: 1, insertId: 3, warningStatus: 0 }, []];
             return [{ affectedRows: 1, changedRows: 1, warningStatus: 0 }, []];
           },
@@ -205,6 +209,29 @@ test('runs the published sanitized MCP workflow', async () => {
         ],
       },
     );
+
+    const createTableResponse = await client.request('tools/call', {
+      name: 'create_table',
+      arguments: {
+        schema: 'demo_catalog',
+        table: 'sample_events',
+        columns: [
+          { name: 'event_id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false, autoIncrement: true },
+          { name: 'label', type: { kind: 'varchar', length: 255 }, nullable: false },
+        ],
+        primaryKey: ['event_id'],
+        reason: 'Create the synthetic event table',
+      },
+    });
+    const createTableResult = createTableResponse.result?.structuredContent as Record<string, unknown>;
+    assert.deepEqual(createTableResult, {
+      operation: 'create_table',
+      operationId: createTableResult.operationId,
+      target: { schema: 'demo_catalog', table: 'sample_events' },
+      warnings: 0,
+    });
+    assert.equal(typeof createTableResult.operationId, 'string');
+    assert.doesNotMatch(JSON.stringify(createTableResponse), /CREATE TABLE|BIGINT|VARCHAR|Create the synthetic/);
     assert.deepEqual(toolResult(await client.request('tools/call', { name: 'execute_read_only_query', arguments: { sql, parameters: [] } })), {
       columns: [
         { name: 'record_id', type: 'LONGLONG' },
@@ -261,6 +288,7 @@ test('runs the published sanitized MCP workflow', async () => {
     });
     assertDmlResponse(deleteResponse, 'delete', []);
     assert.ok(auditLines.length >= 6);
+    assert.equal(ddlAuditLines.length, 2);
     for (const value of ['synthetic example', 'updated synthetic example']) {
       assert.equal(
         auditLines.some((line) => line.includes(value)),

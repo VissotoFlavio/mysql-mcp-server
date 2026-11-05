@@ -1,4 +1,4 @@
-# Sanitized DML agent workflow
+# Sanitized controlled-write agent workflow
 
 This example is intentionally synthetic. It contains no credentials, hostnames, internal identifiers, or production data.
 
@@ -53,6 +53,37 @@ After a known successful write, use a bounded read-only query when practical to 
 
 The MCP layer validates identifiers, columns, filters, bounds, and payloads. MySQL remains the authorization and constraint authority. There is no local table allowlist and no separate DML credential. The configured account must have only the permissions appropriate for the enabled workflow.
 
+## Controlled DDL workflow
+
+`create_table` is advertised only when `MYSQL_DDL_ENABLED=true`. Its presence is a capability boundary, not blanket permission to change a schema. Before calling it, discover the accessible schema, state the exact structured definition and audit reason, and obtain the operator's explicit confirmation for that specific table.
+
+```json
+{
+  "name": "create_table",
+  "arguments": {
+    "schema": "demo_catalog",
+    "table": "sample_events",
+    "columns": [
+      {
+        "name": "event_id",
+        "type": { "kind": "integer", "integerType": "bigint", "unsigned": true },
+        "nullable": false,
+        "autoIncrement": true
+      },
+      {
+        "name": "label",
+        "type": { "kind": "varchar", "length": 255 },
+        "nullable": false
+      }
+    ],
+    "primaryKey": ["event_id"],
+    "reason": "Create the synthetic event table"
+  }
+}
+```
+
+A successful response contains only `operation`, `operationId`, `target`, and `warnings`. It does not echo SQL or the full table definition. If the safe result is `MYSQL_DDL_OUTCOME_UNKNOWN` or returns `retryAdvice: "VERIFY_STATE_BEFORE_RETRYING"`, verify whether the synthetic table exists with `list_accessible_tables` or `describe_table`, report the result, and wait for operator direction. Do not retry. Permission, existing-table, lock/deadlock, and structural outcomes are also reported without raw MySQL text; they do not authorize grants, arbitrary DDL, or an altered retry.
+
 ## Opt-in integration testing
 
 Integration tests are intentionally excluded from normal validation because DML changes data. Run them only against an isolated disposable database after explicit authorization, with credentials supplied externally:
@@ -67,3 +98,16 @@ npm run test:integration
 ```
 
 The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
+
+The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, verifies it through MCP metadata, then drops that same table during cleanup. It remains skipped unless all of these values are explicitly supplied for an isolated schema:
+
+```powershell
+$env:MYSQL_INTEGRATION_TEST = 'true'
+$env:MYSQL_DDL_INTEGRATION_TEST = 'true'
+$env:MYSQL_DDL_ENABLED = 'true'
+$env:MYSQL_DDL_INTEGRATION_CONFIRM = 'isolated-database-schema'
+$env:MYSQL_DDL_INTEGRATION_TABLE = 'mcp_ddl_test_synthetic'
+npm run test:integration
+```
+
+The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.

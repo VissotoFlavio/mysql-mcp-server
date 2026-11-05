@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 import { type Environment, type ReadFile } from './config.js';
+import type { DdlAuditWriter } from './db/ddl-audit.js';
 import type { DmlAuditWriter } from './db/dml-audit.js';
 import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
 import { registerCreateTableTool } from './tools/create-table.js';
@@ -26,6 +27,7 @@ export interface McpApplicationOptions {
   readonly driver?: PoolFactory;
   readonly readFile?: ReadFile;
   readonly dmlAuditWriter?: DmlAuditWriter;
+  readonly ddlAuditWriter?: DdlAuditWriter;
 }
 
 export interface McpApplication {
