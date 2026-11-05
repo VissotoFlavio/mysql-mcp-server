@@ -72,8 +72,8 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     });
     const createResult = createdResponse.result?.structuredContent as { operation: string; target: { schema: string; table: string } };
     assert.equal(createResult.operation, 'create_table');
-    assert.deepEqual(createResult.target, { schema, table });
     created = true;
+    assert.deepEqual(createResult.target, { schema, table });
 
     const describedResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
     const described = describedResponse.result?.structuredContent as { table: { schemaName: string; tableName: string } };
