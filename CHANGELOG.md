@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#51 — feat: add capability-bound CREATE TABLE execution](https://github.com/VissotoFlavio/mysql-mcp-server/issues/51)
+
 - [#50 — feat: validate structured CREATE TABLE specifications](https://github.com/VissotoFlavio/mysql-mcp-server/issues/50)
 - [#49 — feat: add opt-in DDL feature configuration](https://github.com/VissotoFlavio/mysql-mcp-server/issues/49)
 

@@ -1,5 +1,7 @@
 import sqlParser from 'node-sql-parser';
 
+import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH } from '../tools/create-table-input.js';
+
 const { Parser } = sqlParser;
 const parser = new Parser();
 
@@ -18,6 +20,15 @@ export class DmlPolicyError extends Error {
   constructor() {
     super('Only one top-level DML statement is allowed.');
     this.name = 'DmlPolicyError';
+  }
+}
+
+export class DdlPolicyError extends Error {
+  readonly code = 'MYSQL_SQL_NOT_DDL';
+
+  constructor() {
+    super('Only one internally generated CREATE TABLE statement is allowed.');
+    this.name = 'DdlPolicyError';
   }
 }
 
@@ -161,6 +172,140 @@ export function assertDmlSql(sql: string): void {
 
   if (statement.type !== 'insert' && statement.type !== 'update' && statement.type !== 'delete') {
     throw new DmlPolicyError();
+  }
+}
+
+const MAX_CREATE_TABLE_SQL_LENGTH = 65_536;
+const UNSAFE_IDENTIFIER_CHARACTER = /[`"\p{Cc}\p{Cf}\u2028\u2029]/u;
+
+type CreateTableColumnKind = 'integer' | 'other';
+type ParsedCreateTableColumn = Readonly<{ name: string; kind: CreateTableColumnKind; nullable: boolean; autoIncrement: boolean }>;
+
+function failDdlPolicy(): never {
+  throw new DdlPolicyError();
+}
+
+function isCanonicalInteger(value: string, minimum: number, maximum: number): boolean {
+  if (!/^(0|[1-9][0-9]*)$/u.test(value)) return false;
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= minimum && numeric <= maximum;
+}
+
+function readExpected(sql: string, index: number, expected: string): number {
+  if (!sql.startsWith(expected, index)) failDdlPolicy();
+  return index + expected.length;
+}
+
+function readIdentifier(sql: string, index: number): readonly [string, number] {
+  if (sql[index] !== '`') failDdlPolicy();
+  const end = sql.indexOf('`', index + 1);
+  if (end < 0) failDdlPolicy();
+  const identifier = sql.slice(index + 1, end);
+  if (identifier.length === 0 || Array.from(identifier).length > MAX_CREATE_TABLE_IDENTIFIER_LENGTH || UNSAFE_IDENTIFIER_CHARACTER.test(identifier)) {
+    failDdlPolicy();
+  }
+  return [identifier, end + 1];
+}
+
+function readColumnType(sql: string, index: number): readonly [CreateTableColumnKind, number] {
+  if (sql.startsWith('TINYINT(1)', index)) return ['other', index + 'TINYINT(1)'.length];
+
+  const integer = /^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)(?: UNSIGNED)?/u.exec(sql.slice(index));
+  if (integer !== null) return ['integer', index + integer[0].length];
+
+  const decimal = /^DECIMAL\(([0-9]+),([0-9]+)\)/u.exec(sql.slice(index));
+  if (decimal !== null) {
+    if (!isCanonicalInteger(decimal[1], 1, 65) || !isCanonicalInteger(decimal[2], 0, 30) || Number(decimal[2]) > Number(decimal[1])) {
+      failDdlPolicy();
+    }
+    return ['other', index + decimal[0].length];
+  }
+
+  const text = /^(?:CHAR|VARCHAR)\(([0-9]+)\)/u.exec(sql.slice(index));
+  if (text !== null) {
+    if (!isCanonicalInteger(text[1], 1, 255)) failDdlPolicy();
+    return ['other', index + text[0].length];
+  }
+
+  const temporal = /^(?:TIMESTAMP|DATETIME|TIME)(?:\([0-6]\))?/u.exec(sql.slice(index));
+  if (temporal !== null) return ['other', index + temporal[0].length];
+
+  for (const type of ['TEXT', 'DATE', 'JSON'] as const) {
+    if (sql.startsWith(type, index)) return ['other', index + type.length];
+  }
+  failDdlPolicy();
+}
+
+function readColumn(sql: string, index: number): readonly [ParsedCreateTableColumn, number] {
+  const [name, afterName] = readIdentifier(sql, index);
+  const [kind, afterType] = readColumnType(sql, readExpected(sql, afterName, ' '));
+  let next = afterType;
+  let nullable: boolean;
+  if (sql.startsWith(' NOT NULL', next)) {
+    nullable = false;
+    next += ' NOT NULL'.length;
+  } else if (sql.startsWith(' NULL', next)) {
+    nullable = true;
+    next += ' NULL'.length;
+  } else {
+    failDdlPolicy();
+  }
+  const autoIncrement = sql.startsWith(' AUTO_INCREMENT', next);
+  if (autoIncrement) next += ' AUTO_INCREMENT'.length;
+  return [Object.freeze({ name, kind, nullable, autoIncrement }), next];
+}
+
+/**
+ * Defense in depth for the DDL capability: accept only the canonical single
+ * CREATE TABLE grammar emitted by the internal builder.
+ */
+export function assertCreateTableSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'CREATE TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' (');
+
+  const columns: ParsedCreateTableColumn[] = [];
+  const declaredColumns = new Set<string>();
+  while (true) {
+    const [column, afterColumn] = readColumn(sql, index);
+    if (declaredColumns.has(column.name) || columns.length >= MAX_CREATE_TABLE_COLUMNS) failDdlPolicy();
+    columns.push(column);
+    declaredColumns.add(column.name);
+    index = afterColumn;
+    if (sql.startsWith(', PRIMARY KEY (', index)) {
+      index += ', PRIMARY KEY ('.length;
+      break;
+    }
+    index = readExpected(sql, index, ', ');
+  }
+
+  const primaryKey: string[] = [];
+  const primaryKeyColumns = new Set<string>();
+  while (true) {
+    const [name, afterName] = readIdentifier(sql, index);
+    if (!declaredColumns.has(name) || primaryKeyColumns.has(name) || primaryKey.length >= MAX_CREATE_TABLE_COLUMNS) failDdlPolicy();
+    primaryKey.push(name);
+    primaryKeyColumns.add(name);
+    index = afterName;
+    if (sql[index] === ')') {
+      index += 1;
+      break;
+    }
+    index = readExpected(sql, index, ', ');
+  }
+  index = readExpected(sql, index, ')');
+  if (index !== sql.length) failDdlPolicy();
+
+  const autoIncrementColumns = columns.filter((column) => column.autoIncrement);
+  if (
+    autoIncrementColumns.length > 1 ||
+    (autoIncrementColumns.length === 1 &&
+      (autoIncrementColumns[0].kind !== 'integer' || autoIncrementColumns[0].nullable || primaryKey[0] !== autoIncrementColumns[0].name))
+  ) {
+    failDdlPolicy();
   }
 }
 
