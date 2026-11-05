@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [#50 — feat: validate structured CREATE TABLE specifications](https://github.com/VissotoFlavio/mysql-mcp-server/issues/50)
 - [#49 — feat: add opt-in DDL feature configuration](https://github.com/VissotoFlavio/mysql-mcp-server/issues/49)
 
 ## 0.2.0 - 2026-10-23
