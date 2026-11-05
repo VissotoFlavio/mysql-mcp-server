@@ -22,18 +22,11 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
   assert.match(table ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,50}$/);
   assert.match(schema ?? '', /^[A-Za-z0-9_]{1,64}$/);
 
-  const cleanupConnection = await mysql.createConnection({
-    host: process.env.MYSQL_HOST,
-    port: Number(process.env.MYSQL_PORT ?? 3306),
-    database: schema,
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD,
-  });
   const application = createMcpApplication();
   const [client, server] = InMemoryTransport.createLinkedPair();
   const pending = new Map<number, (response: JsonRpcResponse) => void>();
   let requestId = 0;
-  let created = false;
+  let createRequested = false;
   client.onmessage = (message) => {
     if (typeof message === 'object' && message !== null && 'id' in message && typeof message.id === 'number') {
       pending.get(message.id)?.(message as JsonRpcResponse);
@@ -57,6 +50,10 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     });
     await client.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} } as never);
 
+    const existingResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    assert.equal(existingResponse.result?.isError, true, 'the temporary test table must not already exist');
+
+    createRequested = true;
     const createdResponse = await request('tools/call', {
       name: 'create_table',
       arguments: {
@@ -72,15 +69,27 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     });
     const createResult = createdResponse.result?.structuredContent as { operation: string; target: { schema: string; table: string } };
     assert.equal(createResult.operation, 'create_table');
-    created = true;
     assert.deepEqual(createResult.target, { schema, table });
 
     const describedResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
-    const described = describedResponse.result?.structuredContent as { table: { schemaName: string; tableName: string } };
-    assert.deepEqual(described.table, { schemaName: schema, tableName: table });
+    const described = describedResponse.result?.structuredContent as { table: { schemaName: string; tableName: string; tableType: string } };
+    assert.deepEqual(described.table, { schemaName: schema, tableName: table, tableType: 'BASE TABLE' });
   } finally {
-    await application.close();
-    if (created) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
-    await cleanupConnection.end();
+    try {
+      await application.close();
+    } finally {
+      const cleanupConnection = await mysql.createConnection({
+        host: process.env.MYSQL_HOST,
+        port: Number(process.env.MYSQL_PORT ?? 3306),
+        database: schema,
+        user: process.env.MYSQL_USER,
+        password: process.env.MYSQL_PASSWORD,
+      });
+      try {
+        if (createRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
+      } finally {
+        await cleanupConnection.end();
+      }
+    }
   }
 });
