@@ -78,7 +78,7 @@ function input() {
   };
 }
 
-test('registers create_table only with the DDL opt-in and preserves the existing tool surface', async () => {
+test('registers controlled DDL tools only with the DDL opt-in and preserves the existing tool surface', async () => {
   const disabled = createApplication(undefined, false);
   const enabled = createApplication();
   const disabledClient = await connect(disabled);
@@ -90,10 +90,16 @@ test('registers create_table only with the DDL opt-in and preserves the existing
       readonly annotations?: Record<string, unknown>;
     }>;
     assert.equal(
-      disabledTools.some(({ name }) => name === 'create_table'),
+      disabledTools.some(({ name }) => name === 'create_table' || name === 'create_index'),
       false,
     );
     assert.deepEqual(enabledTools.find(({ name }) => name === 'create_table')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'create_index')?.annotations, {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
@@ -105,7 +111,7 @@ test('registers create_table only with the DDL opt-in and preserves the existing
     );
     assert.deepEqual(
       enabledTools
-        .filter(({ name }) => name !== 'create_table')
+        .filter(({ name }) => name !== 'create_table' && name !== 'create_index')
         .map(({ name }) => name)
         .sort(),
       disabledTools.map(({ name }) => name).sort(),
