@@ -2,11 +2,12 @@ import type { ExecuteValues } from 'mysql2';
 import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues } from 'mysql2/promise';
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
+import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 
 import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
-import { buildCreateTableStatement } from './ddl-builder.js';
+import { buildCreateIndexStatement, buildCreateTableStatement } from './ddl-builder.js';
 import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
 import type { DmlAuditAttempt, DmlAuditRequest, DmlAuditWriter } from './dml-audit.js';
 import {
@@ -19,7 +20,7 @@ import {
   type UpdateDmlBuilderInput,
 } from './dml-builder.js';
 import { sanitizeDmlDriverCode } from './dml-error-codes.js';
-import { assertCreateTableSql, assertDmlSql, DdlPolicyError, DmlPolicyError, assertReadOnlySql } from './sql-policy.js';
+import { assertCreateIndexSql, assertCreateTableSql, assertDmlSql, DdlPolicyError, DmlPolicyError, assertReadOnlySql } from './sql-policy.js';
 
 export class ConnectionError extends Error {
   readonly code: string = 'MYSQL_CONNECTION_FAILED';
@@ -305,14 +306,18 @@ function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult
 }
 
 declare const dmlStatementBrand: unique symbol;
-declare const ddlStatementBrand: unique symbol;
+declare const createTableStatementBrand: unique symbol;
+declare const createIndexStatementBrand: unique symbol;
 
 export interface DmlStatement {
   readonly [dmlStatementBrand]: true;
 }
 
 export interface CreateTableStatement {
-  readonly [ddlStatementBrand]: true;
+  readonly [createTableStatementBrand]: true;
+}
+export interface CreateIndexStatement {
+  readonly [createIndexStatementBrand]: true;
 }
 
 export interface DmlConnectionLayer {
@@ -323,6 +328,8 @@ export interface DmlConnectionLayer {
 export interface DdlConnectionLayer {
   executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult>;
   executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeCreateIndex(statement: CreateIndexStatement): Promise<CreateTableExecutionResult>;
+  executeCreateIndexWithOperationId(statement: CreateIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
 }
 
 export interface ConnectionLayer {
@@ -350,7 +357,11 @@ interface DmlStatementData {
 }
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
-const ddlStatementRegistry = new WeakMap<CreateTableStatement, Readonly<{ sql: string; input: CreateTableInput }>>();
+type DdlStatement = CreateTableStatement | CreateIndexStatement;
+type DdlStatementData =
+  | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
+  | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>;
+const ddlStatementRegistry = new WeakMap<DdlStatement, DdlStatementData>();
 
 /** Creates the only executable DDL capability, from a freshly normalized structured input. */
 export function createCreateTableStatement(input: CreateTableInput): CreateTableStatement {
@@ -363,7 +374,22 @@ export function createCreateTableStatement(input: CreateTableInput): CreateTable
     throw new DdlPolicyError();
   }
   const statement = Object.freeze({}) as CreateTableStatement;
-  ddlStatementRegistry.set(statement, Object.freeze({ sql, input: normalized }));
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_table', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported plain CREATE INDEX statement. */
+export function createCreateIndexStatement(input: CreateIndexInput): CreateIndexStatement {
+  let sql: string;
+  let normalized: CreateIndexInput;
+  try {
+    normalized = normalizeCreateIndexInput(input);
+    sql = buildCreateIndexStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as CreateIndexStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_index', sql, input: normalized }));
   return statement;
 }
 
@@ -631,9 +657,12 @@ export function createConnectionLayer({
     },
   });
 
-  async function executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]> {
-    let statementData: Readonly<{ sql: string; input: CreateTableInput }> | undefined;
-    let auditRequest: CreateTableInput | undefined;
+  async function executeDdlWithOperationId(
+    statement: DdlStatement,
+    expected: DdlStatementData['operation'],
+  ): Promise<readonly [CreateTableExecutionResult, string]> {
+    let statementData: DdlStatementData | undefined;
+    let auditRequest: unknown;
     try {
       if (typeof statement === 'object' && statement !== null && ddlStatementRegistry.has(statement))
         statementData = ddlStatementRegistry.get(statement);
@@ -653,8 +682,9 @@ export function createConnectionLayer({
     let submitted = false;
     try {
       if (!config.ddlEnabled) throw new DdlDisabledError();
-      if (statementData === undefined) throw new DdlPolicyError();
-      assertCreateTableSql(statementData.sql);
+      if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
+      if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
+      else assertCreateIndexSql(statementData.sql);
       audit.markSubmitted();
       submitted = true;
       const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
@@ -675,10 +705,15 @@ export function createConnectionLayer({
 
   const ddl: DdlConnectionLayer = Object.freeze({
     async executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult> {
-      const [result] = await executeCreateTableWithOperationId(statement);
+      const [result] = await executeDdlWithOperationId(statement, 'create_table');
       return result;
     },
-    executeCreateTableWithOperationId,
+    executeCreateTableWithOperationId: (statement: CreateTableStatement) => executeDdlWithOperationId(statement, 'create_table'),
+    async executeCreateIndex(statement: CreateIndexStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'create_index');
+      return result;
+    },
+    executeCreateIndexWithOperationId: (statement: CreateIndexStatement) => executeDdlWithOperationId(statement, 'create_index'),
   });
 
   return Object.freeze({

@@ -21,6 +21,21 @@ function request() {
   };
 }
 
+test('audits CREATE INDEX requests with their own operation and sanitized target', () => {
+  const lines: string[] = [];
+  const attempt = createDdlAuditAttempt(
+    { schema: 'app', table: 'orders', index: 'orders_created_idx', columns: ['created_at'], reason: 'Support recent lookups.' },
+    { writer: (line) => lines.push(line), operationId: () => 'index-op', now: () => 1_000 },
+  );
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'create_index');
+  assert.equal(completed.target.index, 'orders_created_idx');
+  assert.equal(completed.reason, 'Support recent lookups.');
+  assert.equal(completed.primaryKeyColumnCount, null);
+  assert.doesNotMatch(lines.join('\n'), /CREATE INDEX/i);
+});
+
 test('hashes normalized CREATE TABLE requests and emits only sanitized structural audit data', () => {
   const first = request();
   const equivalent = {

@@ -1,9 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildCreateTableStatement } from '../../src/db/ddl-builder.js';
-import { assertCreateTableSql } from '../../src/db/sql-policy.js';
+import { buildCreateIndexStatement, buildCreateTableStatement } from '../../src/db/ddl-builder.js';
+import { assertCreateIndexSql, assertCreateTableSql } from '../../src/db/sql-policy.js';
+import { normalizeCreateIndexInput } from '../../src/tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH, normalizeCreateTableInput } from '../../src/tools/create-table-input.js';
+
+test('renders only canonical plain CREATE INDEX SQL', () => {
+  const statement = buildCreateIndexStatement(
+    normalizeCreateIndexInput({
+      schema: 'app',
+      table: 'orders',
+      index: 'orders_created_idx',
+      columns: ['tenant_id', 'created_at'],
+      reason: 'Support ordered lookups.',
+    }),
+  );
+  assert.equal(statement.sql, 'CREATE INDEX `orders_created_idx` ON `app`.`orders` (`tenant_id`, `created_at`)');
+  assert.doesNotThrow(() => assertCreateIndexSql(statement.sql));
+  for (const sql of [
+    'CREATE UNIQUE INDEX `x` ON `app`.`orders` (`id`)',
+    'CREATE INDEX `x` ON `app`.`orders` (`id` DESC)',
+    'CREATE INDEX `x` ON `app`.`orders` (`id`) ALGORITHM=INPLACE',
+  ])
+    assert.throws(() => assertCreateIndexSql(sql));
+});
 
 test('renders every supported CREATE TABLE column form deterministically', () => {
   const statement = buildCreateTableStatement(
