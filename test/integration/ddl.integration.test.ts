@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { InMemoryTransport, LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/server';
+import type { RowDataPacket } from 'mysql2';
 import mysql from 'mysql2/promise';
 
 import { createMcpApplication } from '../../src/server.js';
@@ -16,6 +17,12 @@ const table = process.env.MYSQL_DDL_INTEGRATION_TABLE;
 
 interface JsonRpcResponse {
   readonly result?: Record<string, unknown>;
+}
+
+interface IndexRow extends RowDataPacket {
+  readonly INDEX_NAME: string;
+  readonly COLUMN_NAME: string;
+  readonly NON_UNIQUE: number;
 }
 
 test('runs the opt-in CREATE TABLE contract against an explicitly isolated schema', { skip: !enabled }, async () => {
@@ -74,6 +81,31 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     const describedResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
     const described = describedResponse.result?.structuredContent as { table: { schemaName: string; tableName: string; tableType: string } };
     assert.deepEqual(described.table, { schemaName: schema, tableName: table, tableType: 'BASE TABLE' });
+
+    const indexResponse = await request('tools/call', {
+      name: 'create_index',
+      arguments: { schema, table, index: 'mcp_ddl_test_label_idx', columns: ['label'], reason: 'Run the isolated CREATE INDEX integration contract' },
+    });
+    const indexResult = indexResponse.result?.structuredContent as { operation: string; target: { schema: string; table: string; index: string } };
+    assert.equal(indexResult.operation, 'create_index');
+    assert.deepEqual(indexResult.target, { schema, table, index: 'mcp_ddl_test_label_idx' });
+
+    const verificationConnection = await mysql.createConnection({
+      host: process.env.MYSQL_HOST,
+      port: Number(process.env.MYSQL_PORT ?? 3306),
+      database: schema,
+      user: process.env.MYSQL_USER,
+      password: process.env.MYSQL_PASSWORD,
+    });
+    try {
+      const [indexes] = await verificationConnection.query<IndexRow[]>(
+        'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?',
+        [schema, table, 'mcp_ddl_test_label_idx'],
+      );
+      assert.deepEqual(indexes, [{ INDEX_NAME: 'mcp_ddl_test_label_idx', COLUMN_NAME: 'label', NON_UNIQUE: 1 }]);
+    } finally {
+      await verificationConnection.end();
+    }
   } finally {
     try {
       await application.close();

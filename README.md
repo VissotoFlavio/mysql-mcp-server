@@ -189,7 +189,7 @@ npm run lint
 npm test
 ```
 
-Integration tests are opt-in and are not part of the normal local validation. The metadata integration test is read-only. The DML and DDL integration contracts are documented in [the sanitized workflow](docs/sanitized-workflow-demo.md) and must run only against an isolated disposable database because they mutate state. The DDL test creates and drops its dedicated table and is skipped unless all DDL-specific opt-ins and the isolated-database confirmation are supplied. With required MySQL configuration supplied externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
+Integration tests are opt-in and are not part of the normal local validation. The metadata integration test is read-only. The DML and DDL integration contracts are documented in [the sanitized workflow](docs/sanitized-workflow-demo.md) and must run only against an isolated disposable database because they mutate state. The DDL test creates its dedicated table, creates and verifies an index through `create_index`, then drops the table during cleanup. It is skipped unless all DDL-specific opt-ins and the isolated-database confirmation are supplied. With required MySQL configuration supplied externally, set `MYSQL_INTEGRATION_TEST` to `true`, then run:
 
 ```bash
 npm run test:integration

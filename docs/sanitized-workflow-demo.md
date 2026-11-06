@@ -105,7 +105,7 @@ npm run test:integration
 
 The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
 
-The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, verifies it through MCP metadata, then drops that same table during cleanup. It remains skipped unless all of these values are explicitly supplied for an isolated schema:
+The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, verifies it through MCP metadata, creates and verifies a non-unique index via `create_index`, then drops that table (and therefore the index) during cleanup. It remains skipped unless all of these values are explicitly supplied for an isolated schema:
 
 ```powershell
 $env:MYSQL_INTEGRATION_TEST = 'true'
