@@ -29,6 +29,18 @@ export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverC
   1069: 'structure',
   ER_TOO_LONG_KEY: 'structure',
   1071: 'structure',
+  ER_CANNOT_ADD_FOREIGN: 'structure',
+  1215: 'structure',
+  ER_ROW_IS_REFERENCED_2: 'structure',
+  1451: 'structure',
+  ER_NO_REFERENCED_ROW_2: 'structure',
+  1452: 'structure',
+  ER_FK_CANNOT_OPEN_PARENT: 'structure',
+  1824: 'structure',
+  ER_FK_DUP_NAME: 'structure',
+  1826: 'structure',
+  ER_FK_INCOMPATIBLE_COLUMNS: 'structure',
+  3780: 'structure',
 });
 
 export function classifyDdlDriverCode(value: unknown): DdlDriverClassification | undefined {

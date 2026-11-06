@@ -1,5 +1,6 @@
 import sqlParser from 'node-sql-parser';
 
+import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
 import { MAX_CREATE_INDEX_COLUMNS } from '../tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH } from '../tools/create-table-input.js';
 
@@ -351,6 +352,60 @@ export function assertAlterTableAddColumnSql(sql: string): void {
   index = readExpected(sql, index, ' ADD COLUMN ');
   const [column, afterColumn] = readColumn(sql, index);
   if (!column.nullable || column.autoIncrement || afterColumn !== sql.length) failDdlPolicy();
+}
+
+/** Defense in depth for the canonical, intra-schema ADD CONSTRAINT FOREIGN KEY grammar. */
+export function assertAlterTableAddForeignKeySql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'ALTER TABLE ');
+  const [schema, afterSchema] = readIdentifier(sql, index);
+  index = afterSchema;
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' ADD CONSTRAINT ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' FOREIGN KEY (');
+  const localColumns = new Set<string>();
+  while (true) {
+    const [column, afterColumn] = readIdentifier(sql, index);
+    if (localColumns.has(column) || localColumns.size >= MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS) failDdlPolicy();
+    localColumns.add(column);
+    index = afterColumn;
+    if (sql[index] === ')') {
+      index += 1;
+      break;
+    }
+    index = readExpected(sql, index, ', ');
+  }
+  index = readExpected(sql, index, ' REFERENCES ');
+  const [referencedSchema, afterReferencedSchema] = readIdentifier(sql, index);
+  index = afterReferencedSchema;
+  if (referencedSchema !== schema) failDdlPolicy();
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' (');
+  const referencedColumns = new Set<string>();
+  while (true) {
+    const [column, afterColumn] = readIdentifier(sql, index);
+    if (referencedColumns.has(column) || referencedColumns.size >= MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS) failDdlPolicy();
+    referencedColumns.add(column);
+    index = afterColumn;
+    if (sql[index] === ')') {
+      index += 1;
+      break;
+    }
+    index = readExpected(sql, index, ', ');
+  }
+  if (localColumns.size === 0 || localColumns.size !== referencedColumns.size) failDdlPolicy();
+  index = readExpected(sql, index, ' ON DELETE ');
+  if (sql.startsWith('RESTRICT', index)) index += 'RESTRICT'.length;
+  else if (sql.startsWith('NO ACTION', index)) index += 'NO ACTION'.length;
+  else failDdlPolicy();
+  index = readExpected(sql, index, ' ON UPDATE ');
+  if (sql.startsWith('RESTRICT', index)) index += 'RESTRICT'.length;
+  else if (sql.startsWith('NO ACTION', index)) index += 'NO ACTION'.length;
+  else failDdlPolicy();
+  if (index !== sql.length) failDdlPolicy();
 }
 
 function assertBoundedLimit(limit: unknown, maximumRows: number): void {

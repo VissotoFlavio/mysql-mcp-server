@@ -3,6 +3,7 @@ import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues 
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
+import { normalizeAlterTableAddForeignKeyInput, type AlterTableAddForeignKeyInput } from '../tools/alter-table-add-foreign-key-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
@@ -11,6 +12,7 @@ import { MAX_DML_ROWS } from '../tools/dml-input.js';
 import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
 import {
   buildAlterTableAddColumnStatement,
+  buildAlterTableAddForeignKeyStatement,
   buildCreateIndexStatement,
   buildCreateTableStatement,
   buildCreateUniqueIndexStatement,
@@ -29,6 +31,7 @@ import {
 import { sanitizeDmlDriverCode } from './dml-error-codes.js';
 import {
   assertAlterTableAddColumnSql,
+  assertAlterTableAddForeignKeySql,
   assertCreateIndexSql,
   assertCreateUniqueIndexSql,
   assertCreateTableSql,
@@ -326,6 +329,7 @@ declare const createTableStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
 declare const alterTableAddColumnStatementBrand: unique symbol;
+declare const alterTableAddForeignKeyStatementBrand: unique symbol;
 
 export interface DmlStatement {
   readonly [dmlStatementBrand]: true;
@@ -343,6 +347,9 @@ export interface CreateUniqueIndexStatement {
 export interface AlterTableAddColumnStatement {
   readonly [alterTableAddColumnStatementBrand]: true;
 }
+export interface AlterTableAddForeignKeyStatement {
+  readonly [alterTableAddForeignKeyStatementBrand]: true;
+}
 
 export interface DmlConnectionLayer {
   executeDml<T extends QueryResult>(statement: DmlStatement): Promise<[T, import('mysql2').FieldPacket[]]>;
@@ -358,6 +365,8 @@ export interface DdlConnectionLayer {
   executeCreateUniqueIndexWithOperationId(statement: CreateUniqueIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult>;
   executeAlterTableAddColumnWithOperationId(statement: AlterTableAddColumnStatement): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeAlterTableAddForeignKey(statement: AlterTableAddForeignKeyStatement): Promise<CreateTableExecutionResult>;
+  executeAlterTableAddForeignKeyWithOperationId(statement: AlterTableAddForeignKeyStatement): Promise<readonly [CreateTableExecutionResult, string]>;
 }
 
 export interface ConnectionLayer {
@@ -385,12 +394,14 @@ interface DmlStatementData {
 }
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
-type DdlStatement = CreateTableStatement | CreateIndexStatement | CreateUniqueIndexStatement | AlterTableAddColumnStatement;
+type DdlStatement =
+  CreateTableStatement | CreateIndexStatement | CreateUniqueIndexStatement | AlterTableAddColumnStatement | AlterTableAddForeignKeyStatement;
 type DdlStatementData =
   | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
-  | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>;
+  | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>
+  | Readonly<{ operation: 'alter_table_add_foreign_key'; sql: string; input: AlterTableAddForeignKeyInput }>;
 const ddlStatementRegistry = new WeakMap<DdlStatement, DdlStatementData>();
 
 /** Creates the only executable DDL capability, from a freshly normalized structured input. */
@@ -450,6 +461,21 @@ export function createAlterTableAddColumnStatement(input: AlterTableAddColumnInp
   }
   const statement = Object.freeze({}) as AlterTableAddColumnStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'alter_table_add_column', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported intra-schema foreign key statement. */
+export function createAlterTableAddForeignKeyStatement(input: AlterTableAddForeignKeyInput): AlterTableAddForeignKeyStatement {
+  let sql: string;
+  let normalized: AlterTableAddForeignKeyInput;
+  try {
+    normalized = normalizeAlterTableAddForeignKeyInput(input);
+    sql = buildAlterTableAddForeignKeyStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as AlterTableAddForeignKeyStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'alter_table_add_foreign_key', sql, input: normalized }));
   return statement;
 }
 
@@ -746,7 +772,8 @@ export function createConnectionLayer({
       if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
-      else assertAlterTableAddColumnSql(statementData.sql);
+      else if (statementData.operation === 'alter_table_add_column') assertAlterTableAddColumnSql(statementData.sql);
+      else assertAlterTableAddForeignKeySql(statementData.sql);
       audit.markSubmitted();
       submitted = true;
       const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
@@ -787,6 +814,12 @@ export function createConnectionLayer({
     },
     executeAlterTableAddColumnWithOperationId: (statement: AlterTableAddColumnStatement) =>
       executeDdlWithOperationId(statement, 'alter_table_add_column'),
+    async executeAlterTableAddForeignKey(statement: AlterTableAddForeignKeyStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'alter_table_add_foreign_key');
+      return result;
+    },
+    executeAlterTableAddForeignKeyWithOperationId: (statement: AlterTableAddForeignKeyStatement) =>
+      executeDdlWithOperationId(statement, 'alter_table_add_foreign_key'),
   });
 
   return Object.freeze({

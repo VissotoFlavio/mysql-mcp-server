@@ -3,11 +3,18 @@ import test from 'node:test';
 
 import {
   buildAlterTableAddColumnStatement,
+  buildAlterTableAddForeignKeyStatement,
   buildCreateIndexStatement,
   buildCreateTableStatement,
   buildCreateUniqueIndexStatement,
 } from '../../src/db/ddl-builder.js';
-import { assertAlterTableAddColumnSql, assertCreateIndexSql, assertCreateTableSql, assertCreateUniqueIndexSql } from '../../src/db/sql-policy.js';
+import {
+  assertAlterTableAddColumnSql,
+  assertAlterTableAddForeignKeySql,
+  assertCreateIndexSql,
+  assertCreateTableSql,
+  assertCreateUniqueIndexSql,
+} from '../../src/db/sql-policy.js';
 import { normalizeAlterTableAddColumnInput } from '../../src/tools/alter-table-add-column-input.js';
 import { normalizeCreateIndexInput } from '../../src/tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH, normalizeCreateTableInput } from '../../src/tools/create-table-input.js';
@@ -68,6 +75,31 @@ test('renders only a canonical nullable ALTER TABLE ADD COLUMN statement', () =>
     'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL, ADD COLUMN `other` INT NULL',
   ])
     assert.throws(() => assertAlterTableAddColumnSql(sql));
+});
+
+test('renders only a canonical intra-schema ALTER TABLE ADD CONSTRAINT FOREIGN KEY statement', () => {
+  const statement = buildAlterTableAddForeignKeyStatement({
+    schema: 'app',
+    table: 'orders',
+    constraint: 'orders_customer_fk',
+    columns: ['customer_id'],
+    referencedTable: 'customers',
+    referencedColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'NO ACTION',
+    reason: 'Keep orders valid.',
+  });
+  assert.equal(
+    statement.sql,
+    'ALTER TABLE `app`.`orders` ADD CONSTRAINT `orders_customer_fk` FOREIGN KEY (`customer_id`) REFERENCES `app`.`customers` (`id`) ON DELETE RESTRICT ON UPDATE NO ACTION',
+  );
+  assert.doesNotThrow(() => assertAlterTableAddForeignKeySql(statement.sql));
+  for (const sql of [
+    'ALTER TABLE `app`.`orders` ADD CONSTRAINT `fk` FOREIGN KEY (`customer_id`) REFERENCES `other`.`customers` (`id`) ON DELETE RESTRICT ON UPDATE NO ACTION',
+    'ALTER TABLE `app`.`orders` ADD CONSTRAINT `fk` FOREIGN KEY (`customer_id`) REFERENCES `app`.`customers` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT',
+    'ALTER TABLE `app`.`orders` ADD CONSTRAINT `fk` FOREIGN KEY (`customer_id`) REFERENCES `app`.`customers` (`id`) ON DELETE RESTRICT ON UPDATE SET NULL',
+  ])
+    assert.throws(() => assertAlterTableAddForeignKeySql(sql));
 });
 
 test('renders every supported CREATE TABLE column form deterministically', () => {

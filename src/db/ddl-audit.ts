@@ -5,6 +5,11 @@ import {
   normalizeAlterTableAddColumnInput,
   type AlterTableAddColumnInput,
 } from '../tools/alter-table-add-column-input.js';
+import {
+  AlterTableAddForeignKeyInputValidationError,
+  normalizeAlterTableAddForeignKeyInput,
+  type AlterTableAddForeignKeyInput,
+} from '../tools/alter-table-add-foreign-key-input.js';
 import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
@@ -14,7 +19,8 @@ import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, Quer
 import { DdlPolicyError } from './sql-policy.js';
 
 export type DdlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
-export type DdlAuditOperation = 'create_table' | 'create_index' | 'create_unique_index' | 'alter_table_add_column' | 'invalid';
+export type DdlAuditOperation =
+  'create_table' | 'create_index' | 'create_unique_index' | 'alter_table_add_column' | 'alter_table_add_foreign_key' | 'invalid';
 export interface SafeDdlOutcome {
   readonly result: DdlAuditResult;
   readonly code:
@@ -66,7 +72,7 @@ export interface DdlAuditAttempt {
 
 type NormalizedRequest = Readonly<{
   operation: DdlAuditOperation;
-  input: CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddColumnInput | null;
+  input: CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddColumnInput | AlterTableAddForeignKeyInput | null;
 }>;
 const INVALID_REQUEST: NormalizedRequest = Object.freeze({ operation: 'invalid', input: null });
 const DEFAULT_WRITER: DdlAuditWriter = (line) => process.stderr.write(`${line}\n`);
@@ -136,26 +142,40 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   try {
     return Object.freeze({ operation: 'alter_table_add_column', input: normalizeAlterTableAddColumnInput(request) });
   } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'alter_table_add_foreign_key', input: normalizeAlterTableAddForeignKeyInput(request) });
+  } catch {
     return INVALID_REQUEST;
   }
 }
 function canonicalRequest(request: NormalizedRequest): object {
   if (request.input === null) return { operation: 'invalid' };
   const input = request.input;
-  const inputWithColumns = input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput;
+  const inputWithColumns = input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput;
   return {
     operation: request.operation,
     target: { schema: input.schema, table: input.table },
     reason: input.reason,
     ...(request.operation === 'alter_table_add_column'
       ? { column: (input as AlterTableAddColumnInput).column }
-      : {
-          columns: inputWithColumns.columns.map((column) =>
-            typeof column === 'string'
-              ? column
-              : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-          ),
-        }),
+      : request.operation === 'alter_table_add_foreign_key'
+        ? {
+            constraint: (input as AlterTableAddForeignKeyInput).constraint,
+            columns: (input as AlterTableAddForeignKeyInput).columns,
+            referencedTable: (input as AlterTableAddForeignKeyInput).referencedTable,
+            referencedColumns: (input as AlterTableAddForeignKeyInput).referencedColumns,
+            onDelete: (input as AlterTableAddForeignKeyInput).onDelete,
+            onUpdate: (input as AlterTableAddForeignKeyInput).onUpdate,
+          }
+        : {
+            columns: inputWithColumns.columns.map((column) =>
+              typeof column === 'string'
+                ? column
+                : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+            ),
+          }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -172,6 +192,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, CreateTableInputValidationError) ||
       safeInstanceOf(error, CreateIndexInputValidationError) ||
       safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
+      safeInstanceOf(error, AlterTableAddForeignKeyInputValidationError) ||
       safeInstanceOf(error, DdlPolicyError) ||
       safeInstanceOf(error, DdlAuditInputError)
     )
@@ -183,7 +204,9 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     if (
       hasSafeCode(error, 'MYSQL_DDL_METADATA_INVALID') ||
       hasSafeCode(error, 'MYSQL_DDL_TABLE_INVALID') ||
-      hasSafeCode(error, 'MYSQL_DDL_COLUMN_INVALID')
+      hasSafeCode(error, 'MYSQL_DDL_COLUMN_INVALID') ||
+      hasSafeCode(error, 'MYSQL_DDL_FOREIGN_KEY_EXISTS') ||
+      hasSafeCode(error, 'MYSQL_DDL_FOREIGN_KEY_ORPHANS')
     )
       return OUTCOMES.structure;
     if (safeInstanceOf(error, DdlDriverError)) {
@@ -236,7 +259,7 @@ function baseEvent(
         ? null
         : normalized.operation === 'alter_table_add_column'
           ? 1
-          : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput).columns.length,
+          : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };

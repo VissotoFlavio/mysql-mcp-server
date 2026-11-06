@@ -12,6 +12,7 @@ import type { DdlAuditWriter } from './db/ddl-audit.js';
 import type { DmlAuditWriter } from './db/dml-audit.js';
 import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
 import { registerAlterTableAddColumnTool } from './tools/alter-table-add-column.js';
+import { registerAlterTableAddForeignKeyTool } from './tools/alter-table-add-foreign-key.js';
 import { registerCreateIndexTool } from './tools/create-index.js';
 import { registerCreateTableTool } from './tools/create-table.js';
 import { registerCreateUniqueIndexTool } from './tools/create-unique-index.js';
@@ -63,6 +64,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerCreateIndexTool(server, mysql);
     registerCreateUniqueIndexTool(server, mysql);
     registerAlterTableAddColumnTool(server, mysql);
+    registerAlterTableAddForeignKeyTool(server, mysql);
   }
 
   return Object.freeze({

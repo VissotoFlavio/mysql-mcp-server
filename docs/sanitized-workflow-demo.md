@@ -122,3 +122,9 @@ npm run test:integration
 ```
 
 The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
+
+### Controlled foreign-key creation
+
+`alter_table_add_foreign_key` is advertised only with `MYSQL_DDL_ENABLED=true`. Before calling it, discover both base tables and explicitly confirm `{ schema, table, constraint, columns, referencedTable, referencedColumns, onDelete, onUpdate, reason }` with the operator. The tool accepts one intra-schema foreign key with 1–16 distinct ordered column pairs. Both actions are mandatory and restricted to `RESTRICT` or `NO ACTION`; it never infers `CASCADE`, creates indexes, accepts expressions or SQL, or references another schema.
+
+The preflight verifies both base tables use InnoDB, the constraint is new, pairs are compatible, ordered supporting indexes already exist, and no orphan rows exist. It returns no values or raw metadata. A dedicated account needs only metadata/data-preflight `SELECT`, `ALTER` on the child table, and `REFERENCES` on the parent table for this operation. The operation can acquire metadata locks and concurrent writes or DDL can invalidate a successful preflight, so run it only after explicit confirmation and during an appropriate maintenance window. On `MYSQL_DDL_OUTCOME_UNKNOWN`, use metadata to verify whether the named constraint exists before seeking a new operator decision; never retry automatically.
