@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildAlterTableAddColumnStatement, buildCreateIndexStatement, buildCreateTableStatement } from '../../src/db/ddl-builder.js';
-import { assertAlterTableAddColumnSql, assertCreateIndexSql, assertCreateTableSql } from '../../src/db/sql-policy.js';
+import {
+  buildAlterTableAddColumnStatement,
+  buildCreateIndexStatement,
+  buildCreateTableStatement,
+  buildCreateUniqueIndexStatement,
+} from '../../src/db/ddl-builder.js';
+import { assertAlterTableAddColumnSql, assertCreateIndexSql, assertCreateTableSql, assertCreateUniqueIndexSql } from '../../src/db/sql-policy.js';
 import { normalizeAlterTableAddColumnInput } from '../../src/tools/alter-table-add-column-input.js';
 import { normalizeCreateIndexInput } from '../../src/tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH, normalizeCreateTableInput } from '../../src/tools/create-table-input.js';
@@ -25,6 +30,24 @@ test('renders only canonical plain CREATE INDEX SQL', () => {
     'CREATE INDEX `x` ON `app`.`orders` (`id`) ALGORITHM=INPLACE',
   ])
     assert.throws(() => assertCreateIndexSql(sql));
+});
+
+test('renders only canonical plain CREATE UNIQUE INDEX SQL', () => {
+  const statement = buildCreateUniqueIndexStatement({
+    schema: 'app',
+    table: 'orders',
+    index: 'orders_tenant_created_uq',
+    columns: ['tenant_id', 'created_at'],
+    reason: 'Prevent duplicate events.',
+  });
+  assert.equal(statement.sql, 'CREATE UNIQUE INDEX `orders_tenant_created_uq` ON `app`.`orders` (`tenant_id`, `created_at`)');
+  assert.doesNotThrow(() => assertCreateUniqueIndexSql(statement.sql));
+  for (const sql of [
+    'CREATE INDEX `x` ON `app`.`orders` (`id`)',
+    'CREATE UNIQUE INDEX `x` ON `app`.`orders` (`id` DESC)',
+    'CREATE UNIQUE INDEX `x` ON `app`.`orders` (`id`) ALGORITHM=INPLACE',
+  ])
+    assert.throws(() => assertCreateUniqueIndexSql(sql));
 });
 
 test('renders only a canonical nullable ALTER TABLE ADD COLUMN statement', () => {

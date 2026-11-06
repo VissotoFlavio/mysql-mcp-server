@@ -7,13 +7,14 @@ import {
 } from '../tools/alter-table-add-column-input.js';
 import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
+import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 
 import { classifyDdlDriverCode } from './ddl-error-codes.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
 
 export type DdlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
-export type DdlAuditOperation = 'create_table' | 'create_index' | 'alter_table_add_column' | 'invalid';
+export type DdlAuditOperation = 'create_table' | 'create_index' | 'create_unique_index' | 'alter_table_add_column' | 'invalid';
 export interface SafeDdlOutcome {
   readonly result: DdlAuditResult;
   readonly code:
@@ -24,6 +25,7 @@ export interface SafeDdlOutcome {
     | 'MYSQL_DDL_PERMISSION_DENIED'
     | 'MYSQL_DDL_TABLE_EXISTS'
     | 'MYSQL_DDL_INDEX_EXISTS'
+    | 'MYSQL_DDL_DUPLICATE_DATA'
     | 'MYSQL_DDL_COLUMN_EXISTS'
     | 'MYSQL_DDL_LOCK_TIMEOUT'
     | 'MYSQL_DDL_DEADLOCK'
@@ -62,7 +64,10 @@ export interface DdlAuditAttempt {
   emit(outcome?: Readonly<{ error?: unknown }>): DdlAuditEvent;
 }
 
-type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | CreateIndexInput | AlterTableAddColumnInput | null }>;
+type NormalizedRequest = Readonly<{
+  operation: DdlAuditOperation;
+  input: CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddColumnInput | null;
+}>;
 const INVALID_REQUEST: NormalizedRequest = Object.freeze({ operation: 'invalid', input: null });
 const DEFAULT_WRITER: DdlAuditWriter = (line) => process.stderr.write(`${line}\n`);
 const OUTCOMES = {
@@ -78,6 +83,11 @@ const OUTCOMES = {
   permission: { result: 'rejected', code: 'MYSQL_DDL_PERMISSION_DENIED', message: 'MySQL denied permission for this DDL operation.' },
   tableExists: { result: 'failed', code: 'MYSQL_DDL_TABLE_EXISTS', message: 'The target table already exists.' },
   indexExists: { result: 'failed', code: 'MYSQL_DDL_INDEX_EXISTS', message: 'The requested index name or definition already exists.' },
+  duplicateData: {
+    result: 'failed',
+    code: 'MYSQL_DDL_DUPLICATE_DATA',
+    message: 'The requested unique index conflicts with existing duplicate data.',
+  },
   columnExists: { result: 'failed', code: 'MYSQL_DDL_COLUMN_EXISTS', message: 'The requested column already exists.' },
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
@@ -100,7 +110,14 @@ function hasSafeCode(value: unknown, code: string): boolean {
     return false;
   }
 }
-function normalizeRequest(request: unknown): NormalizedRequest {
+function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperation): NormalizedRequest {
+  if (expectedOperation === 'create_unique_index') {
+    try {
+      return Object.freeze({ operation: 'create_unique_index', input: normalizeCreateUniqueIndexInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
   try {
     return Object.freeze({ operation: 'create_table', input: normalizeCreateTableInput(request) });
   } catch {
@@ -108,6 +125,11 @@ function normalizeRequest(request: unknown): NormalizedRequest {
   }
   try {
     return Object.freeze({ operation: 'create_index', input: normalizeCreateIndexInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'create_unique_index', input: normalizeCreateUniqueIndexInput(request) });
   } catch {
     /* try the other supported DDL contract */
   }
@@ -120,7 +142,7 @@ function normalizeRequest(request: unknown): NormalizedRequest {
 function canonicalRequest(request: NormalizedRequest): object {
   if (request.input === null) return { operation: 'invalid' };
   const input = request.input;
-  const inputWithColumns = input as CreateTableInput | CreateIndexInput;
+  const inputWithColumns = input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput;
   return {
     operation: request.operation,
     target: { schema: input.schema, table: input.table },
@@ -156,10 +178,17 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
     if (hasSafeCode(error, 'MYSQL_DDL_INDEX_EXISTS')) return OUTCOMES.indexExists;
+    if (hasSafeCode(error, 'MYSQL_DDL_DUPLICATE_DATA')) return OUTCOMES.duplicateData;
     if (hasSafeCode(error, 'MYSQL_DDL_COLUMN_EXISTS')) return OUTCOMES.columnExists;
+    if (
+      hasSafeCode(error, 'MYSQL_DDL_METADATA_INVALID') ||
+      hasSafeCode(error, 'MYSQL_DDL_TABLE_INVALID') ||
+      hasSafeCode(error, 'MYSQL_DDL_COLUMN_INVALID')
+    )
+      return OUTCOMES.structure;
     if (safeInstanceOf(error, DdlDriverError)) {
       const classification = classifyDdlDriverCode((error as DdlDriverError).driverCode);
-      return classification === undefined ? OUTCOMES.failed : OUTCOMES[classification];
+      return classification === 'duplicateData' ? OUTCOMES.duplicateData : classification === undefined ? OUTCOMES.failed : OUTCOMES[classification];
     }
     if (safeInstanceOf(error, DdlResultError)) return OUTCOMES.failed;
     if (safeInstanceOf(error, QueryTimeoutError) || safeInstanceOf(error, ConnectionError)) return submitted ? OUTCOMES.unknown : OUTCOMES.failed;
@@ -197,20 +226,24 @@ function baseEvent(
       input === null
         ? Object.freeze({ schema: '[invalid]', table: '[invalid]' })
         : Object.freeze(
-            normalized.operation === 'create_index'
-              ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput).index }
+            normalized.operation === 'create_index' || normalized.operation === 'create_unique_index'
+              ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput | CreateUniqueIndexInput).index }
               : { schema: input.schema, table: input.table },
           ),
     reason: input?.reason ?? '[invalid]',
     columnCount:
-      input === null ? null : normalized.operation === 'alter_table_add_column' ? 1 : (input as CreateTableInput | CreateIndexInput).columns.length,
+      input === null
+        ? null
+        : normalized.operation === 'alter_table_add_column'
+          ? 1
+          : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };
 }
 export function createDdlAuditAttempt(
   request: unknown,
-  options: Readonly<{ writer?: DdlAuditWriter; operationId?: () => string; now?: () => number }> = {},
+  options: Readonly<{ writer?: DdlAuditWriter; operationId?: () => string; now?: () => number; operation?: DdlAuditOperation }> = {},
 ): DdlAuditAttempt {
   const operationId = (() => {
     try {
@@ -220,7 +253,7 @@ export function createDdlAuditAttempt(
       return randomUUID();
     }
   })();
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, options.operation);
   const requestHash = createHash('sha256')
     .update(JSON.stringify(canonicalRequest(normalized)), 'utf8')
     .digest('hex');

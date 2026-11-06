@@ -1,11 +1,15 @@
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
+import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 
 export interface BuiltCreateTableStatement {
   readonly sql: string;
 }
 export interface BuiltCreateIndexStatement {
+  readonly sql: string;
+}
+export interface BuiltCreateUniqueIndexStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableAddColumnStatement {
@@ -64,6 +68,14 @@ export function buildCreateIndexStatement(input: CreateIndexInput): BuiltCreateI
   const normalized = normalizeCreateIndexInput(input);
   return Object.freeze({
     sql: `CREATE INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${normalized.columns.map(escapeIdentifier).join(', ')})`,
+  });
+}
+
+/** Produces the sole canonical SQL representation for the supported CREATE UNIQUE INDEX input. */
+export function buildCreateUniqueIndexStatement(input: CreateUniqueIndexInput): BuiltCreateUniqueIndexStatement {
+  const normalized = normalizeCreateUniqueIndexInput(input);
+  return Object.freeze({
+    sql: `CREATE UNIQUE INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${normalized.columns.map(escapeIdentifier).join(', ')})`,
   });
 }
 

@@ -179,6 +179,9 @@ interface CreateIndexStatisticRow extends RowDataPacket {
   readonly expression: string | null;
   readonly indexType: string;
 }
+interface DuplicateTupleRow extends RowDataPacket {
+  readonly duplicateExists: unknown;
+}
 
 interface AlterTableAddColumnMetadataRow extends RowDataPacket {
   readonly schemaName: string;
@@ -239,12 +242,22 @@ export class DmlMetadataError extends Error {
 export type CreateIndexMetadataCode =
   'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID' | 'MYSQL_DDL_INDEX_EXISTS';
 
+export type CreateUniqueIndexMetadataCode = CreateIndexMetadataCode | 'MYSQL_DDL_DUPLICATE_DATA';
+
 export class CreateIndexMetadataError extends Error {
   readonly code: CreateIndexMetadataCode;
 
   constructor(code: CreateIndexMetadataCode, message: string) {
     super(message);
     this.name = 'CreateIndexMetadataError';
+    this.code = code;
+  }
+}
+export class CreateUniqueIndexMetadataError extends Error {
+  readonly code: CreateUniqueIndexMetadataCode;
+  constructor(code: CreateUniqueIndexMetadataCode, message: string) {
+    super(message);
+    this.name = 'CreateUniqueIndexMetadataError';
     this.code = code;
   }
 }
@@ -270,6 +283,8 @@ const CREATE_INDEX_METADATA_UNAVAILABLE = 'Unable to validate the requested inde
 const CREATE_INDEX_METADATA_BASE_TABLE_ONLY = 'CREATE INDEX metadata is supported for base tables only.';
 const CREATE_INDEX_METADATA_COLUMN_INVALID = 'One or more supplied index columns are unknown, generated, or invisible.';
 const CREATE_INDEX_METADATA_EXISTS = 'The requested index name or definition already exists.';
+const CREATE_UNIQUE_INDEX_METADATA_EXISTS = 'The requested index name, primary key, or unique definition already exists.';
+const CREATE_UNIQUE_INDEX_DUPLICATE_DATA = 'The requested unique index cannot be created because duplicate non-null tuples exist.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
@@ -471,12 +486,23 @@ export async function validateDmlMetadata(
 }
 
 /** @internal Reads bounded table and index metadata required before one CREATE INDEX attempt. */
-export async function validateCreateIndexMetadata(
+function escapeIdentifier(identifier: string): string {
+  return `\`${identifier.replaceAll('`', '``')}\``;
+}
+function duplicateTupleSql(schema: string, table: string, columns: readonly string[]): string {
+  const qualifiedTable = `${escapeIdentifier(schema)}.${escapeIdentifier(table)}`;
+  const selectedColumns = columns.map(escapeIdentifier).join(', ');
+  const nonNull = columns.map((column) => `${escapeIdentifier(column)} IS NOT NULL`).join(' AND ');
+  return `SELECT EXISTS (SELECT 1 FROM (SELECT 1 FROM ${qualifiedTable} WHERE ${nonNull} GROUP BY ${selectedColumns} HAVING COUNT(*) > 1 LIMIT 1) AS duplicate_groups) AS duplicateExists`;
+}
+
+async function validateIndexMetadata(
   mysql: ConnectionLayer,
   schema: string,
   table: string,
   index: string,
   requestedColumns: readonly string[],
+  unique: boolean,
 ): Promise<void> {
   let columns: CreateIndexMetadataRow[];
   let statistics: CreateIndexStatisticRow[];
@@ -575,7 +601,8 @@ export async function validateCreateIndexMetadata(
     indexes.set(normalizedName, entries);
   }
 
-  if (indexes.has(normalizedIndexName(index))) throw new CreateIndexMetadataError('MYSQL_DDL_INDEX_EXISTS', CREATE_INDEX_METADATA_EXISTS);
+  if (indexes.has(normalizedIndexName(index)))
+    throw new CreateIndexMetadataError('MYSQL_DDL_INDEX_EXISTS', unique ? CREATE_UNIQUE_INDEX_METADATA_EXISTS : CREATE_INDEX_METADATA_EXISTS);
   for (const entries of indexes.values()) {
     const ordered = entries.sort((left, right) => left.sequenceInIndex - right.sequenceInIndex);
     if (ordered.some((entry, position) => entry.sequenceInIndex !== position + 1))
@@ -585,7 +612,7 @@ export async function validateCreateIndexMetadata(
       ordered.every(
         (entry, position) =>
           entry.sequenceInIndex === position + 1 &&
-          entry.nonUnique === 1 &&
+          (unique ? entry.nonUnique === 0 : entry.nonUnique === 1) &&
           entry.columnName === requestedColumns[position] &&
           entry.collation === 'A' &&
           entry.subPart === null &&
@@ -593,7 +620,51 @@ export async function validateCreateIndexMetadata(
           entry.indexType.toUpperCase() === 'BTREE',
       )
     )
-      throw new CreateIndexMetadataError('MYSQL_DDL_INDEX_EXISTS', CREATE_INDEX_METADATA_EXISTS);
+      throw new CreateIndexMetadataError('MYSQL_DDL_INDEX_EXISTS', unique ? CREATE_UNIQUE_INDEX_METADATA_EXISTS : CREATE_INDEX_METADATA_EXISTS);
+  }
+
+  if (unique) {
+    let duplicates: DuplicateTupleRow[];
+    try {
+      [duplicates] = await mysql.query<DuplicateTupleRow[]>(queryOptions(mysql, duplicateTupleSql(schema, table, requestedColumns)));
+    } catch {
+      throw new CreateUniqueIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
+    }
+    if (!Array.isArray(duplicates) || duplicates.length !== 1 || typeof duplicates[0] !== 'object' || duplicates[0] === null)
+      throw new CreateUniqueIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
+    const duplicateExists = duplicates[0].duplicateExists;
+    const hasDuplicates =
+      duplicateExists === 1 || duplicateExists === '1' ? true : duplicateExists === 0 || duplicateExists === '0' ? false : undefined;
+    if (hasDuplicates === undefined) throw new CreateUniqueIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
+    if (hasDuplicates) throw new CreateUniqueIndexMetadataError('MYSQL_DDL_DUPLICATE_DATA', CREATE_UNIQUE_INDEX_DUPLICATE_DATA);
+  }
+}
+
+/** @internal Reads bounded metadata and duplicate existence before one CREATE INDEX attempt. */
+export async function validateCreateIndexMetadata(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+  index: string,
+  requestedColumns: readonly string[],
+): Promise<void> {
+  return validateIndexMetadata(mysql, schema, table, index, requestedColumns, false);
+}
+
+/** @internal Reads bounded metadata and duplicate existence before one CREATE UNIQUE INDEX attempt. */
+export async function validateCreateUniqueIndexMetadata(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+  index: string,
+  requestedColumns: readonly string[],
+): Promise<void> {
+  try {
+    await validateIndexMetadata(mysql, schema, table, index, requestedColumns, true);
+  } catch (error) {
+    if (error instanceof CreateUniqueIndexMetadataError) throw error;
+    if (error instanceof CreateIndexMetadataError) throw new CreateUniqueIndexMetadataError(error.code, error.message);
+    throw new CreateUniqueIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
   }
 }
 

@@ -1,4 +1,5 @@
-export type DdlDriverClassification = 'permission' | 'tableExists' | 'indexExists' | 'columnExists' | 'lockTimeout' | 'deadlock' | 'structure';
+export type DdlDriverClassification =
+  'permission' | 'tableExists' | 'indexExists' | 'duplicateData' | 'columnExists' | 'lockTimeout' | 'deadlock' | 'structure';
 
 /** MySQL codes that are safe to classify at the restricted CREATE TABLE boundary. */
 export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverClassification>> = Object.freeze({
@@ -12,6 +13,8 @@ export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverC
   1050: 'tableExists',
   ER_DUP_KEYNAME: 'indexExists',
   1061: 'indexExists',
+  ER_DUP_ENTRY: 'duplicateData',
+  1062: 'duplicateData',
   ER_DUP_FIELDNAME: 'columnExists',
   1060: 'columnExists',
   ER_LOCK_WAIT_TIMEOUT: 'lockTimeout',
@@ -33,7 +36,9 @@ export function classifyDdlDriverCode(value: unknown): DdlDriverClassification |
   const code = String(value);
   if (!Object.hasOwn(DDL_DRIVER_CODE_CLASSIFICATIONS, code)) return undefined;
   const classification = DDL_DRIVER_CODE_CLASSIFICATIONS[code];
-  return ['permission', 'tableExists', 'indexExists', 'columnExists', 'lockTimeout', 'deadlock', 'structure'].includes(classification)
+  return ['permission', 'tableExists', 'indexExists', 'duplicateData', 'columnExists', 'lockTimeout', 'deadlock', 'structure'].includes(
+    classification,
+  )
     ? classification
     : undefined;
 }

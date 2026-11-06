@@ -6,6 +6,7 @@ import {
   createConnectionLayer,
   createCreateIndexStatement,
   createCreateTableStatement,
+  createCreateUniqueIndexStatement,
   DdlDisabledError,
   type ConnectionLayer,
 } from '../../src/db/pool.js';
@@ -32,6 +33,15 @@ const createAccountsIndexStatement = () =>
     index: 'accounts_name_idx',
     columns: ['name'],
     reason: 'Support account-name lookups.',
+  });
+
+const createAccountsUniqueIndexStatement = () =>
+  createCreateUniqueIndexStatement({
+    schema: 'app',
+    table: 'accounts',
+    index: 'accounts_name_uq',
+    columns: ['name'],
+    reason: 'Prevent duplicate account names.',
   });
 
 test('executes CREATE INDEX only through its matching capability and audits the index target', async () => {
@@ -66,6 +76,39 @@ test('executes CREATE INDEX only through its matching capability and audits the 
   assert.equal(started.operation, 'create_index');
   assert.equal(completed.target.index, 'accounts_name_idx');
   assert.equal(completed.result, 'succeeded');
+  await layer.close();
+});
+
+test('sanitizes a post-preflight unique-index duplicate race without exposing driver details', async () => {
+  const auditLines: string[] = [];
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    ddlAuditWriter: (line) => auditLines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            throw Object.assign(new Error('duplicate secret tuple value'), { code: 'ER_DUP_ENTRY', errno: 1062 });
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  await assert.rejects(
+    () => layer.ddl.executeCreateUniqueIndex(createAccountsUniqueIndexStatement()),
+    (error: unknown) => {
+      assert.equal((error as { driverCode?: unknown }).driverCode, 'ER_DUP_ENTRY');
+      return true;
+    },
+  );
+  const completed = JSON.parse(auditLines[1]) as Record<string, unknown>;
+  assert.equal(completed.operation, 'create_unique_index');
+  assert.equal(completed.code, 'MYSQL_DDL_DUPLICATE_DATA');
+  assert.doesNotMatch(JSON.stringify(completed), /secret|tuple value|ER_DUP_ENTRY/);
   await layer.close();
 });
 

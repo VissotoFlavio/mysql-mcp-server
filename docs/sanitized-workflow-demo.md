@@ -88,7 +88,11 @@ A successful response contains only `operation`, `operationId`, `target`, and `w
 
 `create_index` is also advertised only with `MYSQL_DDL_ENABLED=true`. After discovering and confirming the target table and columns, obtain explicit operator confirmation for the exact `{ schema, table, index, columns, reason }` request. It creates only a named non-unique B-tree over existing visible, non-generated columns; arbitrary SQL, prefixes, expressions, unique/full-text/spatial/functional indexes, algorithm/lock options, and index changes or removal remain unavailable.
 
-The MySQL account needs only `INDEX` on the target schema for this operation. A success is not the end of the workflow: inspect metadata to confirm the named index. For `MYSQL_DDL_OUTCOME_UNKNOWN`, verify state before a new operator-approved request; never retry automatically. Permission, duplicate-index, lock/deadlock, and metadata failures return sanitized results and never authorize a grant or broader DDL.
+The MySQL account needs narrowly scoped `SELECT` on the target table for metadata preflight plus `INDEX` on the target schema for this operation. A success is not the end of the workflow: inspect metadata to confirm the named index. For `MYSQL_DDL_OUTCOME_UNKNOWN`, verify state before a new operator-approved request; never retry automatically. Permission, duplicate-index, lock/deadlock, and metadata failures return sanitized results and never authorize a grant or broader DDL.
+
+### Controlled unique index creation
+
+`create_unique_index` uses the same exact structured request and is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit confirmation because it adds a persistent integrity constraint. The preflight checks the base table, visible non-generated columns, index name, primary/equivalent unique keys, and only the existence of a fully non-NULL duplicate tuple; no tuple values are returned or audited. Use narrowly scoped `SELECT` on the target table for metadata and duplicate preflight plus minimum `INDEX` privilege, verify the named index after success, and after an indeterminate outcome verify state and wait for renewed operator direction rather than retrying.
 
 ## Opt-in integration testing
 
@@ -105,11 +109,12 @@ npm run test:integration
 
 The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
 
-The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, verifies it through MCP metadata, creates and verifies a non-unique index via `create_index`, then drops that table (and therefore the index) during cleanup. It remains skipped unless all of these values are explicitly supplied for an isolated schema:
+The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, seeds only that table through `insert_rows`, verifies it through MCP metadata, creates and verifies non-unique and unique indexes, verifies a duplicate-data rejection for the unique index, adds a nullable column, then drops that table (and therefore its indexes) during cleanup. It needs narrowly scoped `SELECT`, plus `CREATE`, `INSERT`, `INDEX`, `ALTER`, and `DROP` on the isolated schema. It remains skipped unless all of these values are explicitly supplied:
 
 ```powershell
 $env:MYSQL_INTEGRATION_TEST = 'true'
 $env:MYSQL_DDL_INTEGRATION_TEST = 'true'
+$env:MYSQL_DML_ENABLED = 'true'
 $env:MYSQL_DDL_ENABLED = 'true'
 $env:MYSQL_DDL_INTEGRATION_CONFIRM = 'isolated-database-schema'
 $env:MYSQL_DDL_INTEGRATION_TABLE = 'mcp_ddl_test_synthetic'

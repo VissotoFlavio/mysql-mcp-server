@@ -5,10 +5,16 @@ import { loadConnectionConfig, type ConnectionConfig, type Environment, type Rea
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
+import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 
 import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
-import { buildAlterTableAddColumnStatement, buildCreateIndexStatement, buildCreateTableStatement } from './ddl-builder.js';
+import {
+  buildAlterTableAddColumnStatement,
+  buildCreateIndexStatement,
+  buildCreateTableStatement,
+  buildCreateUniqueIndexStatement,
+} from './ddl-builder.js';
 import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
 import type { DmlAuditAttempt, DmlAuditRequest, DmlAuditWriter } from './dml-audit.js';
 import {
@@ -24,6 +30,7 @@ import { sanitizeDmlDriverCode } from './dml-error-codes.js';
 import {
   assertAlterTableAddColumnSql,
   assertCreateIndexSql,
+  assertCreateUniqueIndexSql,
   assertCreateTableSql,
   assertDmlSql,
   DdlPolicyError,
@@ -317,6 +324,7 @@ function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult
 declare const dmlStatementBrand: unique symbol;
 declare const createTableStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
+declare const createUniqueIndexStatementBrand: unique symbol;
 declare const alterTableAddColumnStatementBrand: unique symbol;
 
 export interface DmlStatement {
@@ -328,6 +336,9 @@ export interface CreateTableStatement {
 }
 export interface CreateIndexStatement {
   readonly [createIndexStatementBrand]: true;
+}
+export interface CreateUniqueIndexStatement {
+  readonly [createUniqueIndexStatementBrand]: true;
 }
 export interface AlterTableAddColumnStatement {
   readonly [alterTableAddColumnStatementBrand]: true;
@@ -343,6 +354,8 @@ export interface DdlConnectionLayer {
   executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeCreateIndex(statement: CreateIndexStatement): Promise<CreateTableExecutionResult>;
   executeCreateIndexWithOperationId(statement: CreateIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeCreateUniqueIndex(statement: CreateUniqueIndexStatement): Promise<CreateTableExecutionResult>;
+  executeCreateUniqueIndexWithOperationId(statement: CreateUniqueIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult>;
   executeAlterTableAddColumnWithOperationId(statement: AlterTableAddColumnStatement): Promise<readonly [CreateTableExecutionResult, string]>;
 }
@@ -372,10 +385,11 @@ interface DmlStatementData {
 }
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
-type DdlStatement = CreateTableStatement | CreateIndexStatement | AlterTableAddColumnStatement;
+type DdlStatement = CreateTableStatement | CreateIndexStatement | CreateUniqueIndexStatement | AlterTableAddColumnStatement;
 type DdlStatementData =
   | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
+  | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
   | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>;
 const ddlStatementRegistry = new WeakMap<DdlStatement, DdlStatementData>();
 
@@ -406,6 +420,21 @@ export function createCreateIndexStatement(input: CreateIndexInput): CreateIndex
   }
   const statement = Object.freeze({}) as CreateIndexStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_index', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported plain CREATE UNIQUE INDEX statement. */
+export function createCreateUniqueIndexStatement(input: CreateUniqueIndexInput): CreateUniqueIndexStatement {
+  let sql: string;
+  let normalized: CreateUniqueIndexInput;
+  try {
+    normalized = normalizeCreateUniqueIndexInput(input);
+    sql = buildCreateUniqueIndexStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as CreateUniqueIndexStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_unique_index', sql, input: normalized }));
   return statement;
 }
 
@@ -705,7 +734,7 @@ export function createConnectionLayer({
 
     let audit: DdlAuditAttempt;
     try {
-      audit = (await import('./ddl-audit.js')).createDdlAuditAttempt(auditRequest, { writer: ddlAuditWriter });
+      audit = (await import('./ddl-audit.js')).createDdlAuditAttempt(auditRequest, { writer: ddlAuditWriter, operation: statementData?.operation });
     } catch {
       throw new ConnectionError('The DDL audit could not be started.');
     }
@@ -716,6 +745,7 @@ export function createConnectionLayer({
       if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
       if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
+      else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
       else assertAlterTableAddColumnSql(statementData.sql);
       audit.markSubmitted();
       submitted = true;
@@ -746,6 +776,11 @@ export function createConnectionLayer({
       return result;
     },
     executeCreateIndexWithOperationId: (statement: CreateIndexStatement) => executeDdlWithOperationId(statement, 'create_index'),
+    async executeCreateUniqueIndex(statement: CreateUniqueIndexStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'create_unique_index');
+      return result;
+    },
+    executeCreateUniqueIndexWithOperationId: (statement: CreateUniqueIndexStatement) => executeDdlWithOperationId(statement, 'create_unique_index'),
     async executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'alter_table_add_column');
       return result;
