@@ -168,6 +168,48 @@ test('adds one nullable column only after table and duplicate-column preflight',
   }
 });
 
+test('returns a sanitized ALTER TABLE failure without retrying', async () => {
+  let calls = 0;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[{ schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'id', ordinalPosition: 1 }], []];
+          },
+          async execute() {
+            calls += 1;
+            throw Object.assign(new Error('deadlock ddl-secret'), { code: 'ER_LOCK_DEADLOCK' });
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'alter_table_add_column',
+      arguments: {
+        schema: 'app',
+        table: 'accounts',
+        column: { name: 'nickname', type: { kind: 'varchar', length: 100 }, nullable: true },
+        reason: 'Add an optional account nickname.',
+      },
+    });
+    assert.equal(response.result?.isError, true);
+    assert.deepEqual(response.result?.structuredContent, {
+      code: 'MYSQL_DDL_DEADLOCK',
+      message: 'The DDL operation encountered a deadlock.',
+    });
+    assert.equal(calls, 1);
+    assert.doesNotMatch(JSON.stringify(response), /ddl-secret|ALTER TABLE|VARCHAR/);
+  } finally {
+    await client.close();
+  }
+});
+
 test('executes exactly one internal CREATE TABLE statement and returns only operation metadata', async () => {
   let calls = 0;
   let options: unknown;

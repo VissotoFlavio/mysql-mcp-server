@@ -24,6 +24,8 @@ test('rejects a non-nullable or expanded ALTER TABLE surface before driver acces
     [{ ...request(), column: { ...request().column, nullable: false } }, 'column_not_nullable', 'input.column.nullable'],
     [{ ...request(), column: { ...request().column, autoIncrement: false } }, 'additional_property', 'input.column'],
     [{ ...request(), column: { ...request().column, default: 'anonymous' } }, 'additional_property', 'input.column'],
+    [{ ...request(), column: { ...request().column, generated: 'LOWER(nickname)' } }, 'additional_property', 'input.column'],
+    [{ ...request(), column: { ...request().column, after: 'id' } }, 'additional_property', 'input.column'],
     [{ ...request(), algorithm: 'INPLACE' }, 'additional_property', 'input'],
   ] as const) {
     assert.throws(
