@@ -84,6 +84,12 @@ The MCP layer validates identifiers, columns, filters, bounds, and payloads. MyS
 
 A successful response contains only `operation`, `operationId`, `target`, and `warnings`. It does not echo SQL or the full table definition. If the safe result is `MYSQL_DDL_OUTCOME_UNKNOWN` or returns `retryAdvice: "VERIFY_STATE_BEFORE_RETRYING"`, verify whether the synthetic table exists with `list_accessible_tables` or `describe_table`, report the result, and wait for operator direction. Do not retry. Permission, existing-table, lock/deadlock, and structural outcomes are also reported without raw MySQL text; they do not authorize grants, arbitrary DDL, or an altered retry.
 
+### Controlled index creation
+
+`create_index` is also advertised only with `MYSQL_DDL_ENABLED=true`. After discovering and confirming the target table and columns, obtain explicit operator confirmation for the exact `{ schema, table, index, columns, reason }` request. It creates only a named non-unique B-tree over existing visible, non-generated columns; arbitrary SQL, prefixes, expressions, unique/full-text/spatial/functional indexes, algorithm/lock options, and index changes or removal remain unavailable.
+
+The MySQL account needs only `INDEX` on the target schema for this operation. A success is not the end of the workflow: inspect metadata to confirm the named index. For `MYSQL_DDL_OUTCOME_UNKNOWN`, verify state before a new operator-approved request; never retry automatically. Permission, duplicate-index, lock/deadlock, and metadata failures return sanitized results and never authorize a grant or broader DDL.
+
 ## Opt-in integration testing
 
 Integration tests are intentionally excluded from normal validation because DML changes data. Run them only against an isolated disposable database after explicit authorization, with credentials supplied externally:
@@ -99,7 +105,7 @@ npm run test:integration
 
 The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
 
-The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, verifies it through MCP metadata, then drops that same table during cleanup. It remains skipped unless all of these values are explicitly supplied for an isolated schema:
+The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, verifies it through MCP metadata, creates and verifies a non-unique index via `create_index`, then drops that table (and therefore the index) during cleanup. It remains skipped unless all of these values are explicitly supplied for an isolated schema:
 
 ```powershell
 $env:MYSQL_INTEGRATION_TEST = 'true'

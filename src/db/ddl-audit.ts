@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 
 import { classifyDdlDriverCode } from './ddl-error-codes.js';
@@ -7,7 +8,7 @@ import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, Quer
 import { DdlPolicyError } from './sql-policy.js';
 
 export type DdlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
-export type DdlAuditOperation = 'create_table' | 'invalid';
+export type DdlAuditOperation = 'create_table' | 'create_index' | 'invalid';
 export interface SafeDdlOutcome {
   readonly result: DdlAuditResult;
   readonly code:
@@ -17,6 +18,7 @@ export interface SafeDdlOutcome {
     | 'MYSQL_DDL_OUTCOME_UNKNOWN'
     | 'MYSQL_DDL_PERMISSION_DENIED'
     | 'MYSQL_DDL_TABLE_EXISTS'
+    | 'MYSQL_DDL_INDEX_EXISTS'
     | 'MYSQL_DDL_LOCK_TIMEOUT'
     | 'MYSQL_DDL_DEADLOCK'
     | 'MYSQL_DDL_STRUCTURE_INVALID';
@@ -29,7 +31,7 @@ export interface DdlAuditEvent {
   readonly timestamp: string;
   readonly operationId: string;
   readonly operation: DdlAuditOperation;
-  readonly target: Readonly<{ schema: string; table: string }>;
+  readonly target: Readonly<{ schema: string; table: string; index?: string }>;
   readonly reason: string;
   readonly columnCount: number | null;
   readonly primaryKeyColumnCount: number | null;
@@ -54,7 +56,7 @@ export interface DdlAuditAttempt {
   emit(outcome?: Readonly<{ error?: unknown }>): DdlAuditEvent;
 }
 
-type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | null }>;
+type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | CreateIndexInput | null }>;
 const INVALID_REQUEST: NormalizedRequest = Object.freeze({ operation: 'invalid', input: null });
 const DEFAULT_WRITER: DdlAuditWriter = (line) => process.stderr.write(`${line}\n`);
 const OUTCOMES = {
@@ -69,6 +71,7 @@ const OUTCOMES = {
   },
   permission: { result: 'rejected', code: 'MYSQL_DDL_PERMISSION_DENIED', message: 'MySQL denied permission for this DDL operation.' },
   tableExists: { result: 'failed', code: 'MYSQL_DDL_TABLE_EXISTS', message: 'The target table already exists.' },
+  indexExists: { result: 'failed', code: 'MYSQL_DDL_INDEX_EXISTS', message: 'The requested index name or definition already exists.' },
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
   structure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'MySQL rejected the table structure.' },
@@ -81,9 +84,23 @@ function safeInstanceOf(value: unknown, constructor: { [Symbol.hasInstance](valu
     return false;
   }
 }
+function hasSafeCode(value: unknown, code: string): boolean {
+  try {
+    if (typeof value !== 'object' || value === null) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'code');
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value') && descriptor.value === code;
+  } catch {
+    return false;
+  }
+}
 function normalizeRequest(request: unknown): NormalizedRequest {
   try {
     return Object.freeze({ operation: 'create_table', input: normalizeCreateTableInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'create_index', input: normalizeCreateIndexInput(request) });
   } catch {
     return INVALID_REQUEST;
   }
@@ -95,13 +112,12 @@ function canonicalRequest(request: NormalizedRequest): object {
     operation: request.operation,
     target: { schema: input.schema, table: input.table },
     reason: input.reason,
-    columns: input.columns.map((column) => ({
-      name: column.name,
-      type: column.type,
-      nullable: column.nullable,
-      autoIncrement: column.autoIncrement === true,
-    })),
-    primaryKey: input.primaryKey,
+    columns: input.columns.map((column) =>
+      typeof column === 'string'
+        ? column
+        : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+    ),
+    ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
 export function createDdlRequestHash(request: unknown): string {
@@ -113,9 +129,15 @@ export function createDdlRequestHash(request: unknown): string {
 /** Converts internal errors to a restricted DDL outcome without inspecting messages. */
 export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutcome {
   try {
-    if (safeInstanceOf(error, CreateTableInputValidationError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlAuditInputError))
+    if (
+      safeInstanceOf(error, CreateTableInputValidationError) ||
+      safeInstanceOf(error, CreateIndexInputValidationError) ||
+      safeInstanceOf(error, DdlPolicyError) ||
+      safeInstanceOf(error, DdlAuditInputError)
+    )
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
+    if (hasSafeCode(error, 'MYSQL_DDL_INDEX_EXISTS')) return OUTCOMES.indexExists;
     if (safeInstanceOf(error, DdlDriverError)) {
       const classification = classifyDdlDriverCode((error as DdlDriverError).driverCode);
       return classification === undefined ? OUTCOMES.failed : OUTCOMES[classification];
@@ -152,10 +174,17 @@ function baseEvent(
     event: 'ddl_attempt',
     operationId,
     operation: normalized.operation,
-    target: input === null ? Object.freeze({ schema: '[invalid]', table: '[invalid]' }) : Object.freeze({ schema: input.schema, table: input.table }),
+    target:
+      input === null
+        ? Object.freeze({ schema: '[invalid]', table: '[invalid]' })
+        : Object.freeze(
+            normalized.operation === 'create_index'
+              ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput).index }
+              : { schema: input.schema, table: input.table },
+          ),
     reason: input?.reason ?? '[invalid]',
     columnCount: input?.columns.length ?? null,
-    primaryKeyColumnCount: input?.primaryKey.length ?? null,
+    primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };
 }

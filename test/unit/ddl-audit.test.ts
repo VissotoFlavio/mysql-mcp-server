@@ -21,6 +21,21 @@ function request() {
   };
 }
 
+test('audits CREATE INDEX requests with their own operation and sanitized target', () => {
+  const lines: string[] = [];
+  const attempt = createDdlAuditAttempt(
+    { schema: 'app', table: 'orders', index: 'orders_created_idx', columns: ['created_at'], reason: 'Support recent lookups.' },
+    { writer: (line) => lines.push(line), operationId: () => 'index-op', now: () => 1_000 },
+  );
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'create_index');
+  assert.equal(completed.target.index, 'orders_created_idx');
+  assert.equal(completed.reason, 'Support recent lookups.');
+  assert.equal(completed.primaryKeyColumnCount, null);
+  assert.doesNotMatch(lines.join('\n'), /CREATE INDEX/i);
+});
+
 test('hashes normalized CREATE TABLE requests and emits only sanitized structural audit data', () => {
   const first = request();
   const equivalent = {
@@ -53,6 +68,7 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new DdlPolicyError(), false, 'MYSQL_DDL_INVALID_ARGUMENT', undefined],
     [new DdlDisabledError(), false, 'MYSQL_DDL_DISABLED', undefined],
     [new DdlDriverError('ER_TABLE_EXISTS_ERROR', true), true, 'MYSQL_DDL_TABLE_EXISTS', undefined],
+    [new DdlDriverError('ER_DUP_KEYNAME', true), true, 'MYSQL_DDL_INDEX_EXISTS', undefined],
     [new DdlDriverError('ER_ACCESS_DENIED_ERROR', true), true, 'MYSQL_DDL_PERMISSION_DENIED', undefined],
     [new DdlDriverError('ER_TOO_MANY_FIELDS', true), true, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
     [new DdlDriverError('ER_LOCK_WAIT_TIMEOUT', true), true, 'MYSQL_DDL_LOCK_TIMEOUT', undefined],
