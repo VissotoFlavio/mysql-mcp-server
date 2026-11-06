@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { CreateIndexMetadataError, validateCreateIndexMetadata } from '../../src/db/metadata.js';
+import {
+  CreateIndexMetadataError,
+  CreateUniqueIndexMetadataError,
+  validateCreateIndexMetadata,
+  validateCreateUniqueIndexMetadata,
+} from '../../src/db/metadata.js';
 import type { ConnectionLayer } from '../../src/db/pool.js';
 
 function column(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -144,5 +149,66 @@ test('rejects malformed non-contiguous index statistics', async () => {
   assert.equal(
     await codeOf(() => validateCreateIndexMetadata(layer([column()], [statistic({ sequenceInIndex: 2 })]), 'app', 'orders', 'other_idx', ['id'])),
     'MYSQL_DDL_METADATA_INVALID',
+  );
+});
+
+test('unique preflight rejects primary or equivalent unique keys and duplicate tuples without exposing values', async () => {
+  const columns = [column(), column({ columnName: 'tenant_id', ordinalPosition: 2 })];
+  const querySql: string[] = [];
+  const mysql: ConnectionLayer = {
+    queryTimeoutMs: 30_000,
+    queryOptions: () => ({ timeout: 30_000 }),
+    async query(options) {
+      querySql.push(options.sql);
+      if (options.sql.includes('information_schema.STATISTICS')) return [[statistic({ columnName: 'tenant_id' })], []] as never;
+      if (options.sql.includes('duplicate_groups')) return [[{ duplicateExists: '1' }], []] as never;
+      return [columns, []] as never;
+    },
+    async verifyConnection() {},
+    async close() {},
+  };
+  await assert.rejects(
+    () => validateCreateUniqueIndexMetadata(mysql, 'app', 'orders', 'orders_tenant_uq', ['tenant_id']),
+    (error: unknown) => error instanceof CreateUniqueIndexMetadataError && error.code === 'MYSQL_DDL_INDEX_EXISTS',
+  );
+  const withoutKeys: ConnectionLayer = {
+    ...mysql,
+    async query(options) {
+      querySql.push(options.sql);
+      if (options.sql.includes('information_schema.STATISTICS')) return [[], []] as never;
+      if (options.sql.includes('duplicate_groups')) return [[{ duplicateExists: '1' }], []] as never;
+      return [columns, []] as never;
+    },
+  };
+  await assert.rejects(
+    () => validateCreateUniqueIndexMetadata(withoutKeys, 'app', 'orders', 'orders_tenant_uq', ['tenant_id']),
+    (error: unknown) => error instanceof CreateUniqueIndexMetadataError && error.code === 'MYSQL_DDL_DUPLICATE_DATA',
+  );
+  assert.match(querySql.at(-1) ?? '', /duplicate_groups/);
+  assert.doesNotMatch(querySql.at(-1) ?? '', /tenant-value|SELECT `tenant_id`/);
+});
+
+test('unique preflight accepts only numeric or textual boolean EXISTS values', async () => {
+  const columns = [column(), column({ columnName: 'tenant_id', ordinalPosition: 2 })];
+  const mysqlWithDuplicateExists = (duplicateExists: unknown): ConnectionLayer => ({
+    queryTimeoutMs: 30_000,
+    queryOptions: () => ({ timeout: 30_000 }),
+    async query(options) {
+      if (options.sql.includes('information_schema.STATISTICS')) return [[], []] as never;
+      if (options.sql.includes('duplicate_groups')) return [[{ duplicateExists }], []] as never;
+      return [columns, []] as never;
+    },
+    async verifyConnection() {},
+    async close() {},
+  });
+
+  await validateCreateUniqueIndexMetadata(mysqlWithDuplicateExists('0'), 'app', 'orders', 'orders_tenant_uq', ['tenant_id']);
+  await assert.rejects(
+    () => validateCreateUniqueIndexMetadata(mysqlWithDuplicateExists('1'), 'app', 'orders', 'orders_tenant_uq', ['tenant_id']),
+    (error: unknown) => error instanceof CreateUniqueIndexMetadataError && error.code === 'MYSQL_DDL_DUPLICATE_DATA',
+  );
+  await assert.rejects(
+    () => validateCreateUniqueIndexMetadata(mysqlWithDuplicateExists('unexpected'), 'app', 'orders', 'orders_tenant_uq', ['tenant_id']),
+    (error: unknown) => error instanceof CreateUniqueIndexMetadataError && error.code === 'MYSQL_DDL_METADATA_INVALID',
   );
 });

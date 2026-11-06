@@ -335,6 +335,12 @@ export function assertCreateIndexSql(sql: string): void {
   if (index !== sql.length || columns.size === 0) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical, plain unique B-tree CREATE INDEX grammar. */
+export function assertCreateUniqueIndexSql(sql: string): void {
+  if (typeof sql !== 'string' || !sql.startsWith('CREATE UNIQUE INDEX ')) failDdlPolicy();
+  assertCreateIndexSql(`CREATE INDEX ${sql.slice('CREATE UNIQUE INDEX '.length)}`);
+}
+
 /** Defense in depth for the canonical one-column nullable ALTER TABLE grammar. */
 export function assertAlterTableAddColumnSql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
