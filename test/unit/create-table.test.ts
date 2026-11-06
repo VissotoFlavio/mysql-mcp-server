@@ -101,7 +101,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
     }>;
     assert.equal(
       disabledTools.some(
-        ({ name }) => name === 'create_table' || name === 'create_index' || name === 'create_unique_index' || name === 'alter_table_add_column',
+        ({ name }) =>
+          name === 'create_table' ||
+          name === 'create_index' ||
+          name === 'create_unique_index' ||
+          name === 'alter_table_add_column' ||
+          name === 'alter_table_add_foreign_key',
       ),
       false,
     );
@@ -129,6 +134,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       idempotentHint: false,
       openWorldHint: true,
     });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_add_foreign_key')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
     assert.equal(
       enabledTools.some(({ name }) => name === 'insert_rows'),
       false,
@@ -136,7 +147,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
     assert.deepEqual(
       enabledTools
         .filter(
-          ({ name }) => name !== 'create_table' && name !== 'create_index' && name !== 'create_unique_index' && name !== 'alter_table_add_column',
+          ({ name }) =>
+            name !== 'create_table' &&
+            name !== 'create_index' &&
+            name !== 'create_unique_index' &&
+            name !== 'alter_table_add_column' &&
+            name !== 'alter_table_add_foreign_key',
         )
         .map(({ name }) => name)
         .sort(),
