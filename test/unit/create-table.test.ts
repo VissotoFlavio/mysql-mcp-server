@@ -78,6 +78,16 @@ function input() {
   };
 }
 
+function uniqueIndexInput() {
+  return {
+    schema: 'app',
+    table: 'accounts',
+    index: 'accounts_email_uq',
+    columns: ['email'],
+    reason: 'Prevent duplicate account emails.',
+  };
+}
+
 test('registers controlled DDL tools only with the DDL opt-in and preserves the existing tool surface', async () => {
   const disabled = createApplication(undefined, false);
   const enabled = createApplication();
@@ -90,7 +100,9 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       readonly annotations?: Record<string, unknown>;
     }>;
     assert.equal(
-      disabledTools.some(({ name }) => name === 'create_table' || name === 'create_index' || name === 'alter_table_add_column'),
+      disabledTools.some(
+        ({ name }) => name === 'create_table' || name === 'create_index' || name === 'create_unique_index' || name === 'alter_table_add_column',
+      ),
       false,
     );
     assert.deepEqual(enabledTools.find(({ name }) => name === 'create_table')?.annotations, {
@@ -100,6 +112,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       openWorldHint: true,
     });
     assert.deepEqual(enabledTools.find(({ name }) => name === 'create_index')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'create_unique_index')?.annotations, {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
@@ -117,7 +135,9 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
     );
     assert.deepEqual(
       enabledTools
-        .filter(({ name }) => name !== 'create_table' && name !== 'create_index' && name !== 'alter_table_add_column')
+        .filter(
+          ({ name }) => name !== 'create_table' && name !== 'create_index' && name !== 'create_unique_index' && name !== 'alter_table_add_column',
+        )
         .map(({ name }) => name)
         .sort(),
       disabledTools.map(({ name }) => name).sort(),
@@ -125,6 +145,86 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
   } finally {
     await disabledClient.close();
     await enabledClient.close();
+  }
+});
+
+test('handles create_unique_index only after sanitized metadata and duplicate preflight', async () => {
+  let executeCalls = 0;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query(options: { sql: string }) {
+            if (options.sql.includes('information_schema.STATISTICS')) return [[], []];
+            if (options.sql.includes('duplicate_groups')) return [[{ duplicateExists: 0 }], []];
+            return [
+              [
+                { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'id', ordinalPosition: 1, extra: '' },
+                { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'email', ordinalPosition: 2, extra: '' },
+              ],
+              [],
+            ];
+          },
+          async execute(options: { sql: string }) {
+            executeCalls += 1;
+            assert.equal(options.sql, 'CREATE UNIQUE INDEX `accounts_email_uq` ON `app`.`accounts` (`email`)');
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', { name: 'create_unique_index', arguments: uniqueIndexInput() });
+    assert.equal(response.result?.isError, undefined);
+    assert.deepEqual(JSON.parse(toolText(response)), {
+      operation: 'create_unique_index',
+      operationId: JSON.parse(toolText(response)).operationId,
+      target: { schema: 'app', table: 'accounts', index: 'accounts_email_uq' },
+      warnings: 0,
+    });
+    assert.equal(executeCalls, 1);
+  } finally {
+    await client.close();
+  }
+});
+
+test('returns a sanitized create_unique_index duplicate preflight failure without execution', async () => {
+  let executeCalls = 0;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query(options: { sql: string }) {
+            if (options.sql.includes('information_schema.STATISTICS')) return [[], []];
+            if (options.sql.includes('duplicate_groups')) return [[{ duplicateExists: 1, email: 'must-not-leak' }], []];
+            return [[{ schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'email', ordinalPosition: 1, extra: '' }], []];
+          },
+          async execute() {
+            executeCalls += 1;
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', { name: 'create_unique_index', arguments: uniqueIndexInput() });
+    assert.equal(response.result?.isError, true);
+    assert.deepEqual(response.result?.structuredContent, {
+      code: 'MYSQL_DDL_DUPLICATE_DATA',
+      message: 'The requested unique index conflicts with existing duplicate data.',
+    });
+    assert.equal(executeCalls, 0);
+    assert.doesNotMatch(JSON.stringify(response), /must-not-leak|email/);
+  } finally {
+    await client.close();
   }
 });
 

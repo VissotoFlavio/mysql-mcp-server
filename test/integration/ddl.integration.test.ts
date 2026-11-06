@@ -5,12 +5,14 @@ import { InMemoryTransport, LATEST_PROTOCOL_VERSION } from '@modelcontextprotoco
 import type { RowDataPacket } from 'mysql2';
 import mysql from 'mysql2/promise';
 
+import { loadConnectionConfig } from '../../src/config.js';
 import { createMcpApplication } from '../../src/server.js';
 
 const enabled =
   process.env.MYSQL_INTEGRATION_TEST === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_TEST === 'true' &&
   process.env.MYSQL_DDL_ENABLED === 'true' &&
+  process.env.MYSQL_DML_ENABLED === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_CONFIRM === 'isolated-database-schema';
 const schema = process.env.MYSQL_INTEGRATION_SCHEMA ?? process.env.MYSQL_DATABASE;
 const table = process.env.MYSQL_DDL_INTEGRATION_TABLE;
@@ -29,11 +31,13 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
   assert.match(table ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,50}$/);
   assert.match(schema ?? '', /^[A-Za-z0-9_]{1,64}$/);
 
+  const connectionConfig = loadConnectionConfig();
   const application = createMcpApplication();
   const [client, server] = InMemoryTransport.createLinkedPair();
   const pending = new Map<number, (response: JsonRpcResponse) => void>();
   let requestId = 0;
   let createRequested = false;
+  let applicationClosed = false;
   client.onmessage = (message) => {
     if (typeof message === 'object' && message !== null && 'id' in message && typeof message.id === 'number') {
       pending.get(message.id)?.(message as JsonRpcResponse);
@@ -69,6 +73,8 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
         columns: [
           { name: 'id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false, autoIncrement: true },
           { name: 'label', type: { kind: 'varchar', length: 255 }, nullable: false },
+          { name: 'unique_value', type: { kind: 'varchar', length: 255 }, nullable: false },
+          { name: 'duplicate_value', type: { kind: 'varchar', length: 255 }, nullable: false },
         ],
         primaryKey: ['id'],
         reason: 'Run the isolated CREATE TABLE integration contract',
@@ -89,6 +95,50 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     const indexResult = indexResponse.result?.structuredContent as { operation: string; target: { schema: string; table: string; index: string } };
     assert.equal(indexResult.operation, 'create_index');
     assert.deepEqual(indexResult.target, { schema, table, index: 'mcp_ddl_test_label_idx' });
+
+    const insertResponse = await request('tools/call', {
+      name: 'insert_rows',
+      arguments: {
+        schema,
+        table,
+        rows: [
+          { label: 'unique-index-row-1', unique_value: 'unique-1', duplicate_value: 'duplicate' },
+          { label: 'unique-index-row-2', unique_value: 'unique-2', duplicate_value: 'duplicate' },
+        ],
+        reason: 'Seed isolated unique-index integration rows',
+      },
+    });
+    assert.equal((insertResponse.result?.structuredContent as { operation: string }).operation, 'insert');
+
+    const uniqueIndexResponse = await request('tools/call', {
+      name: 'create_unique_index',
+      arguments: {
+        schema,
+        table,
+        index: 'mcp_ddl_test_unique_value_uq',
+        columns: ['unique_value'],
+        reason: 'Run the isolated CREATE UNIQUE INDEX success contract',
+      },
+    });
+    const uniqueIndexResult = uniqueIndexResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; index: string };
+    };
+    assert.equal(uniqueIndexResult.operation, 'create_unique_index');
+    assert.deepEqual(uniqueIndexResult.target, { schema, table, index: 'mcp_ddl_test_unique_value_uq' });
+
+    const duplicateUniqueIndexResponse = await request('tools/call', {
+      name: 'create_unique_index',
+      arguments: {
+        schema,
+        table,
+        index: 'mcp_ddl_test_duplicate_value_uq',
+        columns: ['duplicate_value'],
+        reason: 'Run the isolated CREATE UNIQUE INDEX duplicate contract',
+      },
+    });
+    assert.equal(duplicateUniqueIndexResponse.result?.isError, true);
+    assert.equal((duplicateUniqueIndexResponse.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_DUPLICATE_DATA');
 
     const addColumnResponse = await request('tools/call', {
       name: 'alter_table_add_column',
@@ -112,32 +162,39 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     };
     assert.ok(afterAlter.columns.some((column) => column.columnName === 'note' && column.dataType === 'varchar' && column.isNullable));
 
+    await application.close();
+    applicationClosed = true;
     const verificationConnection = await mysql.createConnection({
-      host: process.env.MYSQL_HOST,
-      port: Number(process.env.MYSQL_PORT ?? 3306),
+      host: connectionConfig.host,
+      port: connectionConfig.port,
       database: schema,
-      user: process.env.MYSQL_USER,
-      password: process.env.MYSQL_PASSWORD,
+      user: connectionConfig.user,
+      password: connectionConfig.password,
+      ssl: connectionConfig.tls ? { ...connectionConfig.tls } : undefined,
     });
     try {
       const [indexes] = await verificationConnection.query<IndexRow[]>(
-        'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?',
-        [schema, table, 'mcp_ddl_test_label_idx'],
+        'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME IN (?, ?) ORDER BY INDEX_NAME',
+        [schema, table, 'mcp_ddl_test_label_idx', 'mcp_ddl_test_unique_value_uq'],
       );
-      assert.deepEqual(indexes, [{ INDEX_NAME: 'mcp_ddl_test_label_idx', COLUMN_NAME: 'label', NON_UNIQUE: 1 }]);
+      assert.deepEqual(indexes, [
+        { INDEX_NAME: 'mcp_ddl_test_label_idx', COLUMN_NAME: 'label', NON_UNIQUE: 1 },
+        { INDEX_NAME: 'mcp_ddl_test_unique_value_uq', COLUMN_NAME: 'unique_value', NON_UNIQUE: 0 },
+      ]);
     } finally {
       await verificationConnection.end();
     }
   } finally {
     try {
-      await application.close();
+      if (!applicationClosed) await application.close();
     } finally {
       const cleanupConnection = await mysql.createConnection({
-        host: process.env.MYSQL_HOST,
-        port: Number(process.env.MYSQL_PORT ?? 3306),
+        host: connectionConfig.host,
+        port: connectionConfig.port,
         database: schema,
-        user: process.env.MYSQL_USER,
-        password: process.env.MYSQL_PASSWORD,
+        user: connectionConfig.user,
+        password: connectionConfig.password,
+        ssl: connectionConfig.tls ? { ...connectionConfig.tls } : undefined,
       });
       try {
         if (createRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
