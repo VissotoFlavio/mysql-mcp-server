@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#73 — ddl: expose controlled rename_table MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/73)
+
 ## 0.8.0 - 2026-11-06
 
 - [#72 — ddl: expose controlled alter_table_rename_column MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/72)
