@@ -4,6 +4,8 @@
 
 ## 0.3.0 - 2026-11-05
 
+- [#64 — ci: publish a GitHub Release after a merged release branch](https://github.com/VissotoFlavio/mysql-mcp-server/issues/64)
+
 - [#61 — test: support DDL integration with one simultaneous connection](https://github.com/VissotoFlavio/mysql-mcp-server/issues/61)
 
 - [#54 — docs: document and validate the controlled CREATE TABLE workflow](https://github.com/VissotoFlavio/mysql-mcp-server/issues/54)
