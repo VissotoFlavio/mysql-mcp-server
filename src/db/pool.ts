@@ -9,6 +9,7 @@ import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/creat
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
+import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
 import {
@@ -18,6 +19,7 @@ import {
   buildCreateIndexStatement,
   buildCreateTableStatement,
   buildCreateUniqueIndexStatement,
+  buildRenameTableStatement,
 } from './ddl-builder.js';
 import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
 import type { DmlAuditAttempt, DmlAuditRequest, DmlAuditWriter } from './dml-audit.js';
@@ -38,6 +40,7 @@ import {
   assertCreateIndexSql,
   assertCreateUniqueIndexSql,
   assertCreateTableSql,
+  assertRenameTableSql,
   assertDmlSql,
   DdlPolicyError,
   DmlPolicyError,
@@ -334,6 +337,7 @@ declare const createUniqueIndexStatementBrand: unique symbol;
 declare const alterTableAddColumnStatementBrand: unique symbol;
 declare const alterTableAddForeignKeyStatementBrand: unique symbol;
 declare const alterTableRenameColumnStatementBrand: unique symbol;
+declare const renameTableStatementBrand: unique symbol;
 
 export interface DmlStatement {
   readonly [dmlStatementBrand]: true;
@@ -357,6 +361,9 @@ export interface AlterTableAddForeignKeyStatement {
 export interface AlterTableRenameColumnStatement {
   readonly [alterTableRenameColumnStatementBrand]: true;
 }
+export interface RenameTableStatement {
+  readonly [renameTableStatementBrand]: true;
+}
 
 export interface DmlConnectionLayer {
   executeDml<T extends QueryResult>(statement: DmlStatement): Promise<[T, import('mysql2').FieldPacket[]]>;
@@ -376,6 +383,8 @@ export interface DdlConnectionLayer {
   executeAlterTableAddForeignKeyWithOperationId(statement: AlterTableAddForeignKeyStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableRenameColumn(statement: AlterTableRenameColumnStatement): Promise<CreateTableExecutionResult>;
   executeAlterTableRenameColumnWithOperationId(statement: AlterTableRenameColumnStatement): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeRenameTable(statement: RenameTableStatement): Promise<CreateTableExecutionResult>;
+  executeRenameTableWithOperationId(statement: RenameTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
 }
 
 export interface ConnectionLayer {
@@ -409,14 +418,16 @@ type DdlStatement =
   | CreateUniqueIndexStatement
   | AlterTableAddColumnStatement
   | AlterTableAddForeignKeyStatement
-  | AlterTableRenameColumnStatement;
+  | AlterTableRenameColumnStatement
+  | RenameTableStatement;
 type DdlStatementData =
   | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
   | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>
   | Readonly<{ operation: 'alter_table_add_foreign_key'; sql: string; input: AlterTableAddForeignKeyInput }>
-  | Readonly<{ operation: 'alter_table_rename_column'; sql: string; input: AlterTableRenameColumnInput }>;
+  | Readonly<{ operation: 'alter_table_rename_column'; sql: string; input: AlterTableRenameColumnInput }>
+  | Readonly<{ operation: 'rename_table'; sql: string; input: RenameTableInput }>;
 const ddlStatementRegistry = new WeakMap<DdlStatement, DdlStatementData>();
 
 /** Creates the only executable DDL capability, from a freshly normalized structured input. */
@@ -506,6 +517,21 @@ export function createAlterTableRenameColumnStatement(input: AlterTableRenameCol
   }
   const statement = Object.freeze({}) as AlterTableRenameColumnStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'alter_table_rename_column', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported intra-schema RENAME TABLE statement. */
+export function createRenameTableStatement(input: RenameTableInput): RenameTableStatement {
+  let sql: string;
+  let normalized: RenameTableInput;
+  try {
+    normalized = normalizeRenameTableInput(input);
+    sql = buildRenameTableStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as RenameTableStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'rename_table', sql, input: normalized }));
   return statement;
 }
 
@@ -804,7 +830,8 @@ export function createConnectionLayer({
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_column') assertAlterTableAddColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_foreign_key') assertAlterTableAddForeignKeySql(statementData.sql);
-      else assertAlterTableRenameColumnSql(statementData.sql);
+      else if (statementData.operation === 'alter_table_rename_column') assertAlterTableRenameColumnSql(statementData.sql);
+      else assertRenameTableSql(statementData.sql);
       audit.markSubmitted();
       submitted = true;
       const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
@@ -857,6 +884,11 @@ export function createConnectionLayer({
     },
     executeAlterTableRenameColumnWithOperationId: (statement: AlterTableRenameColumnStatement) =>
       executeDdlWithOperationId(statement, 'alter_table_rename_column'),
+    async executeRenameTable(statement: RenameTableStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'rename_table');
+      return result;
+    },
+    executeRenameTableWithOperationId: (statement: RenameTableStatement) => executeDdlWithOperationId(statement, 'rename_table'),
   });
 
   return Object.freeze({

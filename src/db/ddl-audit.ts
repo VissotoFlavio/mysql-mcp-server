@@ -18,8 +18,10 @@ import {
 import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
+import { RenameTableInputValidationError, normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 import { classifyDdlDriverCode } from './ddl-error-codes.js';
+import { RenameTableMetadataError } from './metadata.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
 
@@ -31,6 +33,7 @@ export type DdlAuditOperation =
   | 'alter_table_add_column'
   | 'alter_table_add_foreign_key'
   | 'alter_table_rename_column'
+  | 'rename_table'
   | 'invalid';
 export interface SafeDdlOutcome {
   readonly result: DdlAuditResult;
@@ -46,7 +49,9 @@ export interface SafeDdlOutcome {
     | 'MYSQL_DDL_COLUMN_EXISTS'
     | 'MYSQL_DDL_LOCK_TIMEOUT'
     | 'MYSQL_DDL_DEADLOCK'
-    | 'MYSQL_DDL_STRUCTURE_INVALID';
+    | 'MYSQL_DDL_STRUCTURE_INVALID'
+    | 'MYSQL_DDL_METADATA_INVALID'
+    | 'MYSQL_DDL_TABLE_INVALID';
   readonly message: string;
   readonly retryAdvice?: 'VERIFY_STATE_BEFORE_RETRYING';
 }
@@ -56,7 +61,7 @@ export interface DdlAuditEvent {
   readonly timestamp: string;
   readonly operationId: string;
   readonly operation: DdlAuditOperation;
-  readonly target: Readonly<{ schema: string; table: string; index?: string }>;
+  readonly target: Readonly<{ schema: string; table: string; index?: string; newTable?: string }>;
   readonly reason: string;
   readonly columnCount: number | null;
   readonly primaryKeyColumnCount: number | null;
@@ -90,6 +95,7 @@ type NormalizedRequest = Readonly<{
     | AlterTableAddColumnInput
     | AlterTableAddForeignKeyInput
     | AlterTableRenameColumnInput
+    | RenameTableInput
     | null;
 }>;
 const INVALID_REQUEST: NormalizedRequest = Object.freeze({ operation: 'invalid', input: null });
@@ -113,6 +119,8 @@ const OUTCOMES = {
     message: 'The requested unique index conflicts with existing duplicate data.',
   },
   columnExists: { result: 'failed', code: 'MYSQL_DDL_COLUMN_EXISTS', message: 'The requested column already exists.' },
+  metadata: { result: 'failed', code: 'MYSQL_DDL_METADATA_INVALID', message: 'Unable to validate the requested table metadata.' },
+  tableInvalid: { result: 'failed', code: 'MYSQL_DDL_TABLE_INVALID', message: 'The source must be an existing base table.' },
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
   structure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'MySQL rejected the table structure.' },
@@ -138,6 +146,13 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   if (expectedOperation === 'create_unique_index') {
     try {
       return Object.freeze({ operation: 'create_unique_index', input: normalizeCreateUniqueIndexInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
+  if (expectedOperation === 'rename_table') {
+    try {
+      return Object.freeze({ operation: 'rename_table', input: normalizeRenameTableInput(request) });
     } catch {
       return INVALID_REQUEST;
     }
@@ -170,7 +185,11 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   try {
     return Object.freeze({ operation: 'alter_table_rename_column', input: normalizeAlterTableRenameColumnInput(request) });
   } catch {
-    return INVALID_REQUEST;
+    try {
+      return Object.freeze({ operation: 'rename_table', input: normalizeRenameTableInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
   }
 }
 function canonicalRequest(request: NormalizedRequest): object {
@@ -185,22 +204,24 @@ function canonicalRequest(request: NormalizedRequest): object {
       ? { column: (input as AlterTableAddColumnInput).column }
       : request.operation === 'alter_table_rename_column'
         ? { column: (input as AlterTableRenameColumnInput).column, newColumn: (input as AlterTableRenameColumnInput).newColumn }
-        : request.operation === 'alter_table_add_foreign_key'
-          ? {
-              constraint: (input as AlterTableAddForeignKeyInput).constraint,
-              columns: (input as AlterTableAddForeignKeyInput).columns,
-              referencedTable: (input as AlterTableAddForeignKeyInput).referencedTable,
-              referencedColumns: (input as AlterTableAddForeignKeyInput).referencedColumns,
-              onDelete: (input as AlterTableAddForeignKeyInput).onDelete,
-              onUpdate: (input as AlterTableAddForeignKeyInput).onUpdate,
-            }
-          : {
-              columns: inputWithColumns.columns.map((column) =>
-                typeof column === 'string'
-                  ? column
-                  : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-              ),
-            }),
+        : request.operation === 'rename_table'
+          ? { newTable: (input as RenameTableInput).newTable }
+          : request.operation === 'alter_table_add_foreign_key'
+            ? {
+                constraint: (input as AlterTableAddForeignKeyInput).constraint,
+                columns: (input as AlterTableAddForeignKeyInput).columns,
+                referencedTable: (input as AlterTableAddForeignKeyInput).referencedTable,
+                referencedColumns: (input as AlterTableAddForeignKeyInput).referencedColumns,
+                onDelete: (input as AlterTableAddForeignKeyInput).onDelete,
+                onUpdate: (input as AlterTableAddForeignKeyInput).onUpdate,
+              }
+            : {
+                columns: inputWithColumns.columns.map((column) =>
+                  typeof column === 'string'
+                    ? column
+                    : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+                ),
+              }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -219,11 +240,20 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
       safeInstanceOf(error, AlterTableAddForeignKeyInputValidationError) ||
       safeInstanceOf(error, AlterTableRenameColumnInputValidationError) ||
+      safeInstanceOf(error, RenameTableInputValidationError) ||
       safeInstanceOf(error, DdlPolicyError) ||
       safeInstanceOf(error, DdlAuditInputError)
     )
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
+    if (safeInstanceOf(error, RenameTableMetadataError)) {
+      const code = (error as RenameTableMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : OUTCOMES.tableExists;
+    }
     if (hasSafeCode(error, 'MYSQL_DDL_INDEX_EXISTS')) return OUTCOMES.indexExists;
     if (hasSafeCode(error, 'MYSQL_DDL_DUPLICATE_DATA')) return OUTCOMES.duplicateData;
     if (hasSafeCode(error, 'MYSQL_DDL_COLUMN_EXISTS')) return OUTCOMES.columnExists;
@@ -239,7 +269,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       const classification = classifyDdlDriverCode((error as DdlDriverError).driverCode);
       return classification === 'duplicateData' ? OUTCOMES.duplicateData : classification === undefined ? OUTCOMES.failed : OUTCOMES[classification];
     }
-    if (safeInstanceOf(error, DdlResultError)) return OUTCOMES.failed;
+    if (safeInstanceOf(error, DdlResultError)) return submitted ? OUTCOMES.unknown : OUTCOMES.failed;
     if (safeInstanceOf(error, QueryTimeoutError) || safeInstanceOf(error, ConnectionError)) return submitted ? OUTCOMES.unknown : OUTCOMES.failed;
   } catch {
     /* safe fallback */
@@ -277,7 +307,9 @@ function baseEvent(
         : Object.freeze(
             normalized.operation === 'create_index' || normalized.operation === 'create_unique_index'
               ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput | CreateUniqueIndexInput).index }
-              : { schema: input.schema, table: input.table },
+              : normalized.operation === 'rename_table'
+                ? { schema: input.schema, table: input.table, newTable: (input as RenameTableInput).newTable }
+                : { schema: input.schema, table: input.table },
           ),
     reason: input?.reason ?? '[invalid]',
     columnCount:
@@ -287,7 +319,9 @@ function baseEvent(
           ? 1
           : normalized.operation === 'alter_table_rename_column'
             ? 1
-            : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
+            : normalized.operation === 'rename_table'
+              ? null
+              : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };

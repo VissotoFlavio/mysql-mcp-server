@@ -4,6 +4,7 @@ import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput 
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
+import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 export interface BuiltCreateTableStatement {
   readonly sql: string;
@@ -21,6 +22,9 @@ export interface BuiltAlterTableAddForeignKeyStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableRenameColumnStatement {
+  readonly sql: string;
+}
+export interface BuiltRenameTableStatement {
   readonly sql: string;
 }
 
@@ -108,5 +112,13 @@ export function buildAlterTableRenameColumnStatement(input: AlterTableRenameColu
   const normalized = normalizeAlterTableRenameColumnInput(input);
   return Object.freeze({
     sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} RENAME COLUMN ${escapeIdentifier(normalized.column)} TO ${escapeIdentifier(normalized.newColumn)}`,
+  });
+}
+
+/** Produces the canonical, intra-schema one-table RENAME TABLE statement. */
+export function buildRenameTableStatement(input: RenameTableInput): BuiltRenameTableStatement {
+  const normalized = normalizeRenameTableInput(input);
+  return Object.freeze({
+    sql: `RENAME TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} TO ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.newTable)}`,
   });
 }

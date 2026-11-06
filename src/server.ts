@@ -23,6 +23,7 @@ import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerExplainQueryTool } from './tools/explain.js';
 import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
+import { registerRenameTableTool } from './tools/rename-table.js';
 import { registerUpdateRowsTool } from './tools/update-rows.js';
 
 const packageMetadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -67,6 +68,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerAlterTableAddColumnTool(server, mysql);
     registerAlterTableAddForeignKeyTool(server, mysql);
     registerAlterTableRenameColumnTool(server, mysql);
+    registerRenameTableTool(server, mysql);
   }
 
   return Object.freeze({
