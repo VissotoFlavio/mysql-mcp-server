@@ -90,6 +90,28 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.equal(indexResult.operation, 'create_index');
     assert.deepEqual(indexResult.target, { schema, table, index: 'mcp_ddl_test_label_idx' });
 
+    const addColumnResponse = await request('tools/call', {
+      name: 'alter_table_add_column',
+      arguments: {
+        schema,
+        table,
+        column: { name: 'note', type: { kind: 'varchar', length: 100 }, nullable: true },
+        reason: 'Run the isolated ALTER TABLE ADD COLUMN integration contract',
+      },
+    });
+    const addColumnResult = addColumnResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; column: string };
+    };
+    assert.equal(addColumnResult.operation, 'alter_table_add_column');
+    assert.deepEqual(addColumnResult.target, { schema, table, column: 'note' });
+
+    const afterAlterResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    const afterAlter = afterAlterResponse.result?.structuredContent as {
+      columns: readonly { columnName: string; dataType: string; isNullable: boolean }[];
+    };
+    assert.ok(afterAlter.columns.some((column) => column.columnName === 'note' && column.dataType === 'varchar' && column.isNullable));
+
     const verificationConnection = await mysql.createConnection({
       host: process.env.MYSQL_HOST,
       port: Number(process.env.MYSQL_PORT ?? 3306),

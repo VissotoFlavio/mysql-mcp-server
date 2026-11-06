@@ -1,3 +1,4 @@
+import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 
@@ -5,6 +6,9 @@ export interface BuiltCreateTableStatement {
   readonly sql: string;
 }
 export interface BuiltCreateIndexStatement {
+  readonly sql: string;
+}
+export interface BuiltAlterTableAddColumnStatement {
   readonly sql: string;
 }
 
@@ -60,5 +64,13 @@ export function buildCreateIndexStatement(input: CreateIndexInput): BuiltCreateI
   const normalized = normalizeCreateIndexInput(input);
   return Object.freeze({
     sql: `CREATE INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${normalized.columns.map(escapeIdentifier).join(', ')})`,
+  });
+}
+
+/** Produces the sole canonical SQL representation for one nullable ADD COLUMN request. */
+export function buildAlterTableAddColumnStatement(input: AlterTableAddColumnInput): BuiltAlterTableAddColumnStatement {
+  const normalized = normalizeAlterTableAddColumnInput(input);
+  return Object.freeze({
+    sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} ADD COLUMN ${renderColumn(normalized.column)}`,
   });
 }

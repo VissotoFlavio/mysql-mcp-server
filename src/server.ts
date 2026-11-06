@@ -11,6 +11,7 @@ import { type Environment, type ReadFile } from './config.js';
 import type { DdlAuditWriter } from './db/ddl-audit.js';
 import type { DmlAuditWriter } from './db/dml-audit.js';
 import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
+import { registerAlterTableAddColumnTool } from './tools/alter-table-add-column.js';
 import { registerCreateIndexTool } from './tools/create-index.js';
 import { registerCreateTableTool } from './tools/create-table.js';
 import { registerDeleteRowsTool } from './tools/delete-rows.js';
@@ -59,6 +60,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   if (mysql.ddlEnabled) {
     registerCreateTableTool(server, mysql);
     registerCreateIndexTool(server, mysql);
+    registerAlterTableAddColumnTool(server, mysql);
   }
 
   return Object.freeze({

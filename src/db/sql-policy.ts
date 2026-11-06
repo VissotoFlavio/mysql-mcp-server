@@ -335,6 +335,18 @@ export function assertCreateIndexSql(sql: string): void {
   if (index !== sql.length || columns.size === 0) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical one-column nullable ALTER TABLE grammar. */
+export function assertAlterTableAddColumnSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'ALTER TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' ADD COLUMN ');
+  const [column, afterColumn] = readColumn(sql, index);
+  if (!column.nullable || column.autoIncrement || afterColumn !== sql.length) failDdlPolicy();
+}
+
 function assertBoundedLimit(limit: unknown, maximumRows: number): void {
   if (!isAstNode(limit) || !Array.isArray(limit.value) || limit.value.length === 0) {
     throw new SqlPolicyError();
