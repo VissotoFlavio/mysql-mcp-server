@@ -1,5 +1,7 @@
 import type { RowDataPacket } from 'mysql2';
 
+import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
+
 import type { ConnectionLayer } from './pool.js';
 
 export const MAX_METADATA_RESULTS = 100;
@@ -109,6 +111,35 @@ const VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_ALTER_TABLE_FOREIGN_KEY_TABLE_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType, ENGINE AS engine
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  LIMIT 2
+`;
+const VALIDATE_ALTER_TABLE_FOREIGN_KEY_COLUMNS_SQL = `
+  SELECT COLUMN_NAME AS columnName, ORDINAL_POSITION AS ordinalPosition, COLUMN_TYPE AS columnType,
+    CHARACTER_SET_NAME AS characterSetName, COLLATION_NAME AS collationName, EXTRA AS extra
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+const VALIDATE_ALTER_TABLE_FOREIGN_KEY_STATISTICS_SQL = `
+  SELECT INDEX_NAME AS indexName, NON_UNIQUE AS nonUnique, SEQ_IN_INDEX AS sequenceInIndex,
+    COLLATION AS collation, COLUMN_NAME AS columnName, SUB_PART AS subPart, EXPRESSION AS expression, INDEX_TYPE AS indexType
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY INDEX_NAME ASC, SEQ_IN_INDEX ASC
+  LIMIT ?
+`;
+const VALIDATE_ALTER_TABLE_FOREIGN_KEY_CONSTRAINT_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, CONSTRAINT_NAME AS constraintName, CONSTRAINT_TYPE AS constraintType
+  FROM information_schema.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = ? AND CONSTRAINT_NAME = ?
+  LIMIT 2
+`;
+
 const VALIDATE_CREATE_INDEX_STATISTICS_SQL = `
   SELECT
     TABLE_SCHEMA AS schemaName,
@@ -182,6 +213,9 @@ interface CreateIndexStatisticRow extends RowDataPacket {
 interface DuplicateTupleRow extends RowDataPacket {
   readonly duplicateExists: unknown;
 }
+interface ForeignKeyOrphanRow extends RowDataPacket {
+  readonly orphanExists: unknown;
+}
 
 interface AlterTableAddColumnMetadataRow extends RowDataPacket {
   readonly schemaName: string;
@@ -189,6 +223,36 @@ interface AlterTableAddColumnMetadataRow extends RowDataPacket {
   readonly tableType: string;
   readonly columnName: string;
   readonly ordinalPosition: number;
+}
+interface ForeignKeyTableRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly tableType: string;
+  readonly engine: string | null;
+}
+interface ForeignKeyColumnRow extends RowDataPacket {
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+  readonly columnType: string;
+  readonly characterSetName: string | null;
+  readonly collationName: string | null;
+  readonly extra: string;
+}
+interface ForeignKeyStatisticRow extends RowDataPacket {
+  readonly indexName: string;
+  readonly nonUnique: number;
+  readonly sequenceInIndex: number;
+  readonly collation: string | null;
+  readonly columnName: string | null;
+  readonly subPart: number | null;
+  readonly expression: string | null;
+  readonly indexType: string;
+}
+interface ForeignKeyConstraintRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly constraintName: string;
+  readonly constraintType: string;
 }
 
 export interface SchemaMetadata {
@@ -273,6 +337,20 @@ export class AlterTableAddColumnMetadataError extends Error {
     this.code = code;
   }
 }
+export type AlterTableAddForeignKeyMetadataCode =
+  | 'MYSQL_DDL_METADATA_INVALID'
+  | 'MYSQL_DDL_TABLE_INVALID'
+  | 'MYSQL_DDL_COLUMN_INVALID'
+  | 'MYSQL_DDL_FOREIGN_KEY_EXISTS'
+  | 'MYSQL_DDL_FOREIGN_KEY_ORPHANS';
+export class AlterTableAddForeignKeyMetadataError extends Error {
+  readonly code: AlterTableAddForeignKeyMetadataCode;
+  constructor(code: AlterTableAddForeignKeyMetadataCode, message: string) {
+    super(message);
+    this.name = 'AlterTableAddForeignKeyMetadataError';
+    this.code = code;
+  }
+}
 
 const DML_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const DML_METADATA_BASE_TABLE_ONLY = 'DML metadata is supported for base tables only.';
@@ -288,6 +366,11 @@ const CREATE_UNIQUE_INDEX_DUPLICATE_DATA = 'The requested unique index cannot be
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
+const ALTER_TABLE_FOREIGN_KEY_METADATA_UNAVAILABLE = 'Unable to validate the requested foreign-key metadata.';
+const ALTER_TABLE_FOREIGN_KEY_TABLE_INVALID = 'Foreign keys are supported only between InnoDB base tables.';
+const ALTER_TABLE_FOREIGN_KEY_COLUMN_INVALID = 'One or more foreign-key columns are unknown, incompatible, or lack a required index.';
+const ALTER_TABLE_FOREIGN_KEY_EXISTS = 'The requested foreign-key constraint already exists.';
+const ALTER_TABLE_FOREIGN_KEY_ORPHANS = 'The requested foreign key conflicts with existing data.';
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -713,4 +796,258 @@ export async function validateAlterTableAddColumnMetadata(mysql: ConnectionLayer
   if (first.tableType !== 'BASE TABLE')
     throw new AlterTableAddColumnMetadataError('MYSQL_DDL_TABLE_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY);
   if (names.has(column)) throw new AlterTableAddColumnMetadataError('MYSQL_DDL_COLUMN_EXISTS', ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS);
+}
+
+function foreignKeyError(code: AlterTableAddForeignKeyMetadataCode): AlterTableAddForeignKeyMetadataError {
+  const message =
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? ALTER_TABLE_FOREIGN_KEY_TABLE_INVALID
+      : code === 'MYSQL_DDL_COLUMN_INVALID'
+        ? ALTER_TABLE_FOREIGN_KEY_COLUMN_INVALID
+        : code === 'MYSQL_DDL_FOREIGN_KEY_EXISTS'
+          ? ALTER_TABLE_FOREIGN_KEY_EXISTS
+          : code === 'MYSQL_DDL_FOREIGN_KEY_ORPHANS'
+            ? ALTER_TABLE_FOREIGN_KEY_ORPHANS
+            : ALTER_TABLE_FOREIGN_KEY_METADATA_UNAVAILABLE;
+  return new AlterTableAddForeignKeyMetadataError(code, message);
+}
+function foreignKeyOrphansSql(
+  schema: string,
+  table: string,
+  columns: readonly string[],
+  referencedTable: string,
+  referencedColumns: readonly string[],
+): string {
+  const local = `${escapeIdentifier(schema)}.${escapeIdentifier(table)}`;
+  const referenced = `${escapeIdentifier(schema)}.${escapeIdentifier(referencedTable)}`;
+  const joins = columns
+    .map((column, index) => `local_row.${escapeIdentifier(column)} = referenced_row.${escapeIdentifier(referencedColumns[index] as string)}`)
+    .join(' AND ');
+  const present = columns.map((column) => `local_row.${escapeIdentifier(column)} IS NOT NULL`).join(' AND ');
+  return `SELECT EXISTS (SELECT 1 FROM ${local} AS local_row LEFT JOIN ${referenced} AS referenced_row ON ${joins} WHERE ${present} AND referenced_row.${escapeIdentifier(referencedColumns[0] as string)} IS NULL LIMIT 1) AS orphanExists`;
+}
+
+function columnsByName(rows: readonly ForeignKeyColumnRow[]): Map<string, ForeignKeyColumnRow> {
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS) throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  const names = new Map<string, ForeignKeyColumnRow>();
+  const ordinals = new Set<number>();
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.columnName) ||
+      !Number.isInteger(row.ordinalPosition) ||
+      row.ordinalPosition <= 0 ||
+      !isNonEmptyString(row.columnType) ||
+      (row.characterSetName !== null && !isNonEmptyString(row.characterSetName)) ||
+      (row.collationName !== null && !isNonEmptyString(row.collationName)) ||
+      typeof row.extra !== 'string' ||
+      names.has(row.columnName) ||
+      ordinals.has(row.ordinalPosition) ||
+      /(^|\s)(?:virtual|stored)\s+generated(?=\s|$)|(^|\s)invisible(?=\s|$)/iu.test(row.extra)
+    )
+      throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+    names.set(row.columnName, row);
+    ordinals.add(row.ordinalPosition);
+  }
+  if ([...ordinals].sort((left, right) => left - right).some((ordinal, index) => ordinal !== index + 1))
+    throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  return names;
+}
+
+type OrderedForeignKeyIndex = readonly ForeignKeyStatisticRow[];
+
+function groupForeignKeyIndexes(rows: readonly ForeignKeyStatisticRow[]): readonly OrderedForeignKeyIndex[] {
+  if (!Array.isArray(rows) || rows.length > MAX_INDEX_METADATA_RESULTS) throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  const indexes = new Map<string, ForeignKeyStatisticRow[]>();
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.indexName) ||
+      !Number.isInteger(row.nonUnique) ||
+      ![0, 1].includes(row.nonUnique) ||
+      !Number.isInteger(row.sequenceInIndex) ||
+      row.sequenceInIndex <= 0 ||
+      row.sequenceInIndex > MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS ||
+      (row.collation !== null && !['A', 'D'].includes(row.collation)) ||
+      (row.columnName !== null && !isNonEmptyString(row.columnName)) ||
+      (row.subPart !== null && (!Number.isInteger(row.subPart) || row.subPart <= 0)) ||
+      (row.expression !== null && !isNonEmptyString(row.expression)) ||
+      !isNonEmptyString(row.indexType)
+    )
+      throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+    const entries = indexes.get(row.indexName) ?? [];
+    if (entries.some(({ sequenceInIndex }) => sequenceInIndex === row.sequenceInIndex)) throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+    entries.push(row);
+    indexes.set(row.indexName, entries);
+  }
+  return Object.freeze(
+    [...indexes.values()].map((entries) => {
+      const ordered = [...entries].sort((left, right) => left.sequenceInIndex - right.sequenceInIndex);
+      if (ordered.some((entry, index) => entry.sequenceInIndex !== index + 1)) throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+      return Object.freeze(ordered);
+    }),
+  );
+}
+
+function hasOrderedIndexPrefix(rows: readonly ForeignKeyStatisticRow[], requestedColumns: readonly string[]): boolean {
+  return groupForeignKeyIndexes(rows).some((ordered) =>
+    requestedColumns.every(
+      (column, index) =>
+        ordered[index]?.columnName === column &&
+        ordered[index]?.collation === 'A' &&
+        ordered[index]?.subPart === null &&
+        ordered[index]?.expression === null &&
+        ordered[index]?.indexType.toUpperCase() === 'BTREE',
+    ),
+  );
+}
+
+function hasUniqueExactIndex(rows: readonly ForeignKeyStatisticRow[], requestedColumns: readonly string[]): boolean {
+  return groupForeignKeyIndexes(rows).some((ordered) => {
+    if (ordered.length !== requestedColumns.length) return false;
+    return ordered.every(
+      (entry, index) =>
+        entry.nonUnique === 0 &&
+        entry.columnName === requestedColumns[index] &&
+        entry.collation === 'A' &&
+        entry.subPart === null &&
+        entry.expression === null &&
+        entry.indexType.toUpperCase() === 'BTREE',
+    );
+  });
+}
+
+type ForeignKeyColumnFamily = Readonly<{ kind: 'numeric'; normalizedType: string }> | Readonly<{ kind: 'character' }>;
+
+function foreignKeyColumnFamily(column: ForeignKeyColumnRow): ForeignKeyColumnFamily | undefined {
+  const normalizedType = column.columnType.trim().replaceAll(/\s+/gu, ' ').toLowerCase();
+  if (
+    /^(?:tinyint|smallint|mediumint|int|bigint)(?:\([1-9][0-9]*\))?(?: unsigned)?$/u.test(normalizedType) ||
+    /^decimal\([1-9][0-9]*,[0-9]+\)(?: unsigned)?$/u.test(normalizedType) ||
+    /^(?:float|double)(?:\([1-9][0-9]*(?:,[0-9]+)?\))?(?: unsigned)?$/u.test(normalizedType)
+  )
+    return Object.freeze({ kind: 'numeric', normalizedType });
+  if (/^(?:char|varchar)\([1-9][0-9]*\)$/u.test(normalizedType) || /^(?:tinytext|text|mediumtext|longtext)$/u.test(normalizedType)) {
+    if (!isNonEmptyString(column.characterSetName) || !isNonEmptyString(column.collationName)) return undefined;
+    return Object.freeze({ kind: 'character' });
+  }
+  return undefined;
+}
+
+function compatibleForeignKeyColumns(local: ForeignKeyColumnRow, referenced: ForeignKeyColumnRow): boolean {
+  const localFamily = foreignKeyColumnFamily(local);
+  const referencedFamily = foreignKeyColumnFamily(referenced);
+  if (localFamily === undefined || referencedFamily === undefined || localFamily.kind !== referencedFamily.kind) return false;
+  if (localFamily.kind === 'numeric' && referencedFamily.kind === 'numeric') return localFamily.normalizedType === referencedFamily.normalizedType;
+  return local.characterSetName === referenced.characterSetName && local.collationName === referenced.collationName;
+}
+
+/** @internal Performs the bounded, read-only foreign-key preflight. The subsequent DDL remains subject to normal TOCTOU races. */
+export async function validateAlterTableAddForeignKeyMetadata(
+  mysql: ConnectionLayer,
+  input: Readonly<{
+    schema: string;
+    table: string;
+    constraint: string;
+    columns: readonly string[];
+    referencedTable: string;
+    referencedColumns: readonly string[];
+  }>,
+): Promise<void> {
+  let localTableRows: ForeignKeyTableRow[];
+  let referencedTableRows: ForeignKeyTableRow[];
+  let localColumns: ForeignKeyColumnRow[];
+  let referencedColumns: ForeignKeyColumnRow[];
+  let localIndexes: ForeignKeyStatisticRow[];
+  let referencedIndexes: ForeignKeyStatisticRow[];
+  let constraints: ForeignKeyConstraintRow[];
+  try {
+    [localTableRows] = await mysql.query<ForeignKeyTableRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_TABLE_SQL), [
+      input.schema,
+      input.table,
+    ]);
+    [referencedTableRows] = await mysql.query<ForeignKeyTableRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_TABLE_SQL), [
+      input.schema,
+      input.referencedTable,
+    ]);
+    [localColumns] = await mysql.query<ForeignKeyColumnRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_COLUMNS_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [referencedColumns] = await mysql.query<ForeignKeyColumnRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_COLUMNS_SQL), [
+      input.schema,
+      input.referencedTable,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [localIndexes] = await mysql.query<ForeignKeyStatisticRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_STATISTICS_SQL), [
+      input.schema,
+      input.table,
+      MAX_INDEX_METADATA_RESULTS + 1,
+    ]);
+    [referencedIndexes] = await mysql.query<ForeignKeyStatisticRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_STATISTICS_SQL), [
+      input.schema,
+      input.referencedTable,
+      MAX_INDEX_METADATA_RESULTS + 1,
+    ]);
+    [constraints] = await mysql.query<ForeignKeyConstraintRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_FOREIGN_KEY_CONSTRAINT_SQL), [
+      input.schema,
+      input.constraint,
+    ]);
+  } catch {
+    throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  }
+  const validateTable = (rows: readonly ForeignKeyTableRow[], table: string): void => {
+    if (!Array.isArray(rows) || rows.length !== 1) throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+    const row = rows[0];
+    if (
+      !row ||
+      typeof row !== 'object' ||
+      row.schemaName !== input.schema ||
+      row.tableName !== table ||
+      !isNonEmptyString(row.tableType) ||
+      (row.engine !== null && !isNonEmptyString(row.engine))
+    )
+      throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+    if (row.tableType !== 'BASE TABLE' || row.engine?.toUpperCase() !== 'INNODB') throw foreignKeyError('MYSQL_DDL_TABLE_INVALID');
+  };
+  validateTable(localTableRows, input.table);
+  validateTable(referencedTableRows, input.referencedTable);
+  if (!Array.isArray(constraints) || constraints.length > 1) throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  if (constraints.length === 1) {
+    const constraint = constraints[0];
+    if (
+      !constraint ||
+      constraint.schemaName !== input.schema ||
+      !isNonEmptyString(constraint.tableName) ||
+      constraint.constraintName !== input.constraint ||
+      !isNonEmptyString(constraint.constraintType)
+    )
+      throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+    throw foreignKeyError('MYSQL_DDL_FOREIGN_KEY_EXISTS');
+  }
+  const localByName = columnsByName(localColumns);
+  const referencedByName = columnsByName(referencedColumns);
+  for (let index = 0; index < input.columns.length; index += 1) {
+    const local = localByName.get(input.columns[index] as string);
+    const referenced = referencedByName.get(input.referencedColumns[index] as string);
+    if (!local || !referenced || !compatibleForeignKeyColumns(local, referenced)) throw foreignKeyError('MYSQL_DDL_COLUMN_INVALID');
+  }
+  if (!hasOrderedIndexPrefix(localIndexes, input.columns) || !hasUniqueExactIndex(referencedIndexes, input.referencedColumns))
+    throw foreignKeyError('MYSQL_DDL_COLUMN_INVALID');
+  let orphanRows: ForeignKeyOrphanRow[];
+  try {
+    [orphanRows] = await mysql.query<ForeignKeyOrphanRow[]>(
+      queryOptions(mysql, foreignKeyOrphansSql(input.schema, input.table, input.columns, input.referencedTable, input.referencedColumns)),
+    );
+  } catch {
+    throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (!Array.isArray(orphanRows) || orphanRows.length !== 1 || typeof orphanRows[0] !== 'object' || orphanRows[0] === null)
+    throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+  const orphanExists = orphanRows[0].orphanExists;
+  if (orphanExists === 1 || orphanExists === '1') throw foreignKeyError('MYSQL_DDL_FOREIGN_KEY_ORPHANS');
+  if (orphanExists !== 0 && orphanExists !== '0') throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
 }

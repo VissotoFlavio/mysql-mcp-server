@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-06
+
+- [#74 — ddl: expose controlled alter_table_add_foreign_key MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/74)
+
 ## 0.6.0 - 2026-11-06
 
 - [#70 — ddl: expose controlled create_unique_index MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/70)
