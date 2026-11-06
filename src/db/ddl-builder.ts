@@ -1,6 +1,10 @@
+import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 
 export interface BuiltCreateTableStatement {
+  readonly sql: string;
+}
+export interface BuiltCreateIndexStatement {
   readonly sql: string;
 }
 
@@ -49,4 +53,12 @@ export function buildCreateTableStatement(input: CreateTableInput): BuiltCreateT
   const primaryKey = normalized.primaryKey.map(escapeIdentifier).join(', ');
   const sql = `CREATE TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${[...columns, `PRIMARY KEY (${primaryKey})`].join(', ')})`;
   return Object.freeze({ sql });
+}
+
+/** Produces the sole canonical SQL representation for the supported CREATE INDEX input. */
+export function buildCreateIndexStatement(input: CreateIndexInput): BuiltCreateIndexStatement {
+  const normalized = normalizeCreateIndexInput(input);
+  return Object.freeze({
+    sql: `CREATE INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${normalized.columns.map(escapeIdentifier).join(', ')})`,
+  });
 }

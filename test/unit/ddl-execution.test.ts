@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ConnectionError, createConnectionLayer, createCreateTableStatement, DdlDisabledError, type ConnectionLayer } from '../../src/db/pool.js';
+import {
+  ConnectionError,
+  createConnectionLayer,
+  createCreateIndexStatement,
+  createCreateTableStatement,
+  DdlDisabledError,
+  type ConnectionLayer,
+} from '../../src/db/pool.js';
 import { DdlPolicyError, assertCreateTableSql } from '../../src/db/sql-policy.js';
 
 import { validEnvironment } from './fixtures.js';
@@ -17,6 +24,50 @@ const createAccountsStatement = () =>
     ],
     primaryKey: ['id'],
   });
+
+const createAccountsIndexStatement = () =>
+  createCreateIndexStatement({
+    schema: 'app',
+    table: 'accounts',
+    index: 'accounts_name_idx',
+    columns: ['name'],
+    reason: 'Support account-name lookups.',
+  });
+
+test('executes CREATE INDEX only through its matching capability and audits the index target', async () => {
+  let executeCalls = 0;
+  const auditLines: string[] = [];
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    ddlAuditWriter: (line) => auditLines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute(options: { sql: string }) {
+            executeCalls += 1;
+            assert.equal(options.sql, 'CREATE INDEX `accounts_name_idx` ON `app`.`accounts` (`name`)');
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const indexStatement = createAccountsIndexStatement();
+  const tableStatement = createAccountsStatement();
+  assert.deepEqual(await layer.ddl.executeCreateIndex(indexStatement), { warningStatus: 0 });
+  await assert.rejects(() => layer.ddl.executeCreateTable(indexStatement as never), DdlPolicyError);
+  await assert.rejects(() => layer.ddl.executeCreateIndex(tableStatement as never), DdlPolicyError);
+  assert.equal(executeCalls, 1);
+  const [started, completed] = auditLines.map((line) => JSON.parse(line));
+  assert.equal(started.operation, 'create_index');
+  assert.equal(completed.target.index, 'accounts_name_idx');
+  assert.equal(completed.result, 'succeeded');
+  await layer.close();
+});
 
 test('executes only a capability-minted canonical CREATE TABLE and returns narrow metadata', async () => {
   let executeCalls = 0;

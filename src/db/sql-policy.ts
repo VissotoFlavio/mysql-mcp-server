@@ -1,5 +1,6 @@
 import sqlParser from 'node-sql-parser';
 
+import { MAX_CREATE_INDEX_COLUMNS } from '../tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH } from '../tools/create-table-input.js';
 
 const { Parser } = sqlParser;
@@ -307,6 +308,31 @@ export function assertCreateTableSql(sql: string): void {
   ) {
     failDdlPolicy();
   }
+}
+
+/** Defense in depth for the canonical, plain non-unique B-tree CREATE INDEX grammar. */
+export function assertCreateIndexSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'CREATE INDEX ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' ON ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' (');
+  const columns = new Set<string>();
+  while (true) {
+    const [column, afterColumn] = readIdentifier(sql, index);
+    if (columns.has(column) || columns.size >= MAX_CREATE_INDEX_COLUMNS) failDdlPolicy();
+    columns.add(column);
+    index = afterColumn;
+    if (sql[index] === ')') {
+      index += 1;
+      break;
+    }
+    index = readExpected(sql, index, ', ');
+  }
+  if (index !== sql.length || columns.size === 0) failDdlPolicy();
 }
 
 function assertBoundedLimit(limit: unknown, maximumRows: number): void {

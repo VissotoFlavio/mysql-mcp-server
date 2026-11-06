@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 
 import { classifyDdlDriverCode } from './ddl-error-codes.js';
@@ -7,7 +8,7 @@ import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, Quer
 import { DdlPolicyError } from './sql-policy.js';
 
 export type DdlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
-export type DdlAuditOperation = 'create_table' | 'invalid';
+export type DdlAuditOperation = 'create_table' | 'create_index' | 'invalid';
 export interface SafeDdlOutcome {
   readonly result: DdlAuditResult;
   readonly code:
@@ -29,7 +30,7 @@ export interface DdlAuditEvent {
   readonly timestamp: string;
   readonly operationId: string;
   readonly operation: DdlAuditOperation;
-  readonly target: Readonly<{ schema: string; table: string }>;
+  readonly target: Readonly<{ schema: string; table: string; index?: string }>;
   readonly reason: string;
   readonly columnCount: number | null;
   readonly primaryKeyColumnCount: number | null;
@@ -54,7 +55,7 @@ export interface DdlAuditAttempt {
   emit(outcome?: Readonly<{ error?: unknown }>): DdlAuditEvent;
 }
 
-type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | null }>;
+type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | CreateIndexInput | null }>;
 const INVALID_REQUEST: NormalizedRequest = Object.freeze({ operation: 'invalid', input: null });
 const DEFAULT_WRITER: DdlAuditWriter = (line) => process.stderr.write(`${line}\n`);
 const OUTCOMES = {
@@ -85,6 +86,11 @@ function normalizeRequest(request: unknown): NormalizedRequest {
   try {
     return Object.freeze({ operation: 'create_table', input: normalizeCreateTableInput(request) });
   } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'create_index', input: normalizeCreateIndexInput(request) });
+  } catch {
     return INVALID_REQUEST;
   }
 }
@@ -95,13 +101,12 @@ function canonicalRequest(request: NormalizedRequest): object {
     operation: request.operation,
     target: { schema: input.schema, table: input.table },
     reason: input.reason,
-    columns: input.columns.map((column) => ({
-      name: column.name,
-      type: column.type,
-      nullable: column.nullable,
-      autoIncrement: column.autoIncrement === true,
-    })),
-    primaryKey: input.primaryKey,
+    columns: input.columns.map((column) =>
+      typeof column === 'string'
+        ? column
+        : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+    ),
+    ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
 export function createDdlRequestHash(request: unknown): string {
@@ -113,7 +118,12 @@ export function createDdlRequestHash(request: unknown): string {
 /** Converts internal errors to a restricted DDL outcome without inspecting messages. */
 export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutcome {
   try {
-    if (safeInstanceOf(error, CreateTableInputValidationError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlAuditInputError))
+    if (
+      safeInstanceOf(error, CreateTableInputValidationError) ||
+      safeInstanceOf(error, CreateIndexInputValidationError) ||
+      safeInstanceOf(error, DdlPolicyError) ||
+      safeInstanceOf(error, DdlAuditInputError)
+    )
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
     if (safeInstanceOf(error, DdlDriverError)) {
@@ -152,10 +162,17 @@ function baseEvent(
     event: 'ddl_attempt',
     operationId,
     operation: normalized.operation,
-    target: input === null ? Object.freeze({ schema: '[invalid]', table: '[invalid]' }) : Object.freeze({ schema: input.schema, table: input.table }),
+    target:
+      input === null
+        ? Object.freeze({ schema: '[invalid]', table: '[invalid]' })
+        : Object.freeze(
+            normalized.operation === 'create_index'
+              ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput).index }
+              : { schema: input.schema, table: input.table },
+          ),
     reason: input?.reason ?? '[invalid]',
     columnCount: input?.columns.length ?? null,
-    primaryKeyColumnCount: input?.primaryKey.length ?? null,
+    primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };
 }
