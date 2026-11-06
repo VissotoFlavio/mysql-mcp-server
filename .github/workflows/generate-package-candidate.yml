@@ -1,0 +1,380 @@
+name: Generate package candidate from comment
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-candidate-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/generate-candidate'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      accepted: ${{ steps.request.outputs.accepted }}
+      error: ${{ steps.request.outputs.error }}
+      pull_request_number: ${{ steps.request.outputs.pull_request_number }}
+      head_branch: ${{ steps.request.outputs.head_branch }}
+      source_sha: ${{ steps.request.outputs.source_sha }}
+    steps:
+      - id: request
+        name: Resolve trusted candidate request
+        shell: bash
+        env:
+          COMMENT_ASSOCIATION: ${{ github.event.comment.author_association }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          accepted=false
+          error='Candidate generation requires an authorized actor on an open same-repository release/* or hotfix/* pull request targeting master.'
+          head_branch=''
+          source_sha=''
+          pull_request="$(gh api "repos/$REPOSITORY/pulls/$PULL_REQUEST_NUMBER")"
+          head_branch="$(jq --raw-output '.head.ref // empty' <<<"$pull_request")"
+          head_repository="$(jq --raw-output '.head.repo.full_name // empty' <<<"$pull_request")"
+          source_sha="$(jq --raw-output '.head.sha // empty' <<<"$pull_request")"
+
+          if [[ "$COMMENT_ASSOCIATION" =~ ^(OWNER|MEMBER|COLLABORATOR)$ ]] &&
+             jq --exit-status \
+               --arg repository "$REPOSITORY" \
+               '.state == "open" and
+                .merged_at == null and
+                .base.ref == "master" and
+                (.head.ref | startswith("release/") or startswith("hotfix/")) and
+                .head.repo.full_name == $repository and
+                (.head.sha | test("^[0-9a-f]{40}$"))' <<<"$pull_request" >/dev/null; then
+            accepted=true
+            error=''
+          fi
+
+          {
+            echo "accepted=$accepted"
+            echo "error=$error"
+            echo "pull_request_number=$PULL_REQUEST_NUMBER"
+            echo "head_branch=$head_branch"
+            echo "source_sha=$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: resolve
+    if: needs.resolve.outputs.source_sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    outputs:
+      id: ${{ steps.create.outputs.id }}
+    steps:
+      - id: create
+        name: Create package candidate check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          check="$(gh api --method POST "repos/$REPOSITORY/check-runs" \
+            --raw-field name='Package candidate' \
+            --raw-field head_sha="$SOURCE_SHA" \
+            --raw-field status=in_progress \
+            --raw-field details_url="$GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID")"
+          echo "id=$(jq --raw-output .id <<<"$check")" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: resolve
+    if: needs.resolve.outputs.accepted == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      package_name: ${{ steps.pack.outputs.package_name }}
+      version: ${{ steps.metadata.outputs.candidate_version }}
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Revalidate pull request identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPOSITORY/pulls/$PULL_REQUEST_NUMBER" | jq --exit-status \
+            --arg repository "$REPOSITORY" \
+            --arg source_sha "$SOURCE_SHA" \
+            '.state == "open" and
+             .merged_at == null and
+             .base.ref == "master" and
+             (.head.ref | startswith("release/") or startswith("hotfix/")) and
+             .head.repo.full_name == $repository and
+             .head.sha == $source_sha' >/dev/null
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - id: metadata
+        name: Validate release metadata and calculate candidate version
+        shell: bash
+        env:
+          HEAD_BRANCH: ${{ needs.resolve.outputs.head_branch }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.pull_request_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ "$HEAD_BRANCH" == release/* ]]; then
+            base_version="${HEAD_BRANCH#release/}"
+            channel=rc
+          elif [[ "$HEAD_BRANCH" == hotfix/* ]]; then
+            base_version="${HEAD_BRANCH#hotfix/}"
+            channel=hotfix
+          else
+            fail 'Candidate branch must use release/<stable-semver> or hotfix/<stable-semver>.'
+          fi
+
+          [[ "$base_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail 'Candidate branch must use a stable semantic version.'
+
+          package_version="$(node --input-type=module --eval "import fs from 'node:fs'; process.stdout.write(JSON.parse(fs.readFileSync('package.json', 'utf8')).version);")"
+          lock_version="$(node --input-type=module --eval "import fs from 'node:fs'; const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')); process.stdout.write(lock.version === lock.packages[''].version ? lock.version : '');")"
+          [[ "$package_version" == "$base_version" && "$lock_version" == "$base_version" ]] || fail 'package.json and package-lock.json must match the stable branch version.'
+
+          candidate_version="${base_version}-${channel}.${PULL_REQUEST_NUMBER}.${SOURCE_SHA:0:12}"
+          echo "candidate_version=$candidate_version" >> "$GITHUB_OUTPUT"
+
+      - name: Install and validate candidate
+        run: |
+          npm ci
+          npm run format:check
+          npm run lint
+          npm test
+          npm run build
+
+      - id: pack
+        name: Pack candidate
+        shell: bash
+        env:
+          CANDIDATE_VERSION: ${{ steps.metadata.outputs.candidate_version }}
+        run: |
+          set -euo pipefail
+
+          npm version "$CANDIDATE_VERSION" --no-git-tag-version --ignore-scripts
+          npm pack --json > "$RUNNER_TEMP/pack.json"
+          package_name="$(node --input-type=module --eval "import fs from 'node:fs'; const [result] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/pack.json', 'utf8')); const allowed = new Set(['.env.example', 'CHANGELOG.md', 'LICENSE', 'README.md', 'package.json']); const unexpected = result?.files?.map(({ path }) => path).filter((path) => !allowed.has(path) && !path.startsWith('dist/')) ?? []; if (!result?.filename || !result.files?.some(({ path }) => path === 'dist/server.js') || unexpected.length > 0) { process.stderr.write('npm pack did not produce the expected runtime-only package.\\n'); process.exit(1); } process.stdout.write(result.filename);")"
+          [[ -f "$package_name" ]] || {
+            echo '::error::npm pack did not produce the expected package file.'
+            exit 1
+          }
+
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload candidate package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-mcp-server-${{ steps.metadata.outputs.candidate_version }}
+          path: ${{ steps.pack.outputs.package_name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs:
+      - resolve
+      - validate
+    if: needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      artifact_url: ${{ steps.release.outputs.artifact_url }}
+      release_url: ${{ steps.release.outputs.release_url }}
+    steps:
+      - name: Download candidate package
+        uses: actions/download-artifact@v4
+        with:
+          name: mysql-mcp-server-${{ needs.validate.outputs.version }}
+          path: candidate
+
+      - id: release
+        name: Publish or verify candidate prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ needs.validate.outputs.package_name }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          package_file="candidate/$PACKAGE_NAME"
+          [[ -f "$package_file" ]] || fail 'The validated package artifact is unavailable.'
+
+          gh api "repos/$REPOSITORY/pulls/$PULL_REQUEST_NUMBER" | jq --exit-status \
+            --arg repository "$REPOSITORY" \
+            --arg source_sha "$SOURCE_SHA" \
+            '.state == "open" and
+             .merged_at == null and
+             .base.ref == "master" and
+             (.head.ref | startswith("release/") or startswith("hotfix/")) and
+             .head.repo.full_name == $repository and
+             .head.sha == $source_sha' >/dev/null || fail 'The pull request changed while the candidate was being generated.'
+
+          tag="v$VERSION"
+          tag_exists=false
+          if tag_ref="$(gh api --method GET "repos/$REPOSITORY/git/ref/tags/$tag" 2>/dev/null)"; then
+            tag_exists=true
+            tag_type="$(jq --raw-output '.object.type' <<<"$tag_ref")"
+            tag_target="$(jq --raw-output '.object.sha' <<<"$tag_ref")"
+            if [[ "$tag_type" == tag ]]; then
+              tag_target="$(gh api --method GET "repos/$REPOSITORY/git/tags/$tag_target" --jq '.object.sha')"
+            fi
+            [[ "$tag_target" == "$SOURCE_SHA" ]] || fail "Existing $tag does not point to the candidate commit."
+          fi
+
+          release_exists=false
+          if release="$(gh release view "$tag" --repo "$REPOSITORY" --json isPrerelease,targetCommitish,url 2>/dev/null)"; then
+            release_exists=true
+            jq --exit-status --arg source_sha "$SOURCE_SHA" '.isPrerelease == true and .targetCommitish == $source_sha' <<<"$release" >/dev/null || fail "Existing $tag Release is not the expected prerelease."
+          fi
+
+          if [[ "$release_exists" == true && "$tag_exists" == false ]]; then
+            fail "A GitHub Release exists without its expected tag."
+          fi
+
+          if [[ "$release_exists" == false ]]; then
+            if [[ "$tag_exists" == true ]]; then
+              gh release create "$tag" --repo "$REPOSITORY" --verify-tag --title "Candidate $VERSION" --generate-notes --prerelease
+            else
+              gh release create "$tag" --repo "$REPOSITORY" --target "$SOURCE_SHA" --title "Candidate $VERSION" --generate-notes --prerelease
+            fi
+          fi
+
+          assets="$(gh release view "$tag" --repo "$REPOSITORY" --json assets --jq '.assets')"
+          if ! jq --exit-status --arg package_name "$PACKAGE_NAME" '.[] | select(.name == $package_name)' <<<"$assets" >/dev/null; then
+            gh release upload "$tag" "$package_file" --repo "$REPOSITORY"
+          fi
+
+          release_url="$(gh release view "$tag" --repo "$REPOSITORY" --json url --jq '.url')"
+          artifact_url="$GITHUB_SERVER_URL/$REPOSITORY/releases/download/$tag/$PACKAGE_NAME"
+          {
+            echo "release_url=$release_url"
+            echo "artifact_url=$artifact_url"
+          } >> "$GITHUB_OUTPUT"
+
+  report:
+    needs:
+      - resolve
+      - check
+      - validate
+      - publish
+    if: always() && needs.resolve.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Complete check and report candidate outcome
+        shell: bash
+        env:
+          ARTIFACT_URL: ${{ needs.publish.outputs.artifact_url }}
+          CANDIDATE_VERSION: ${{ needs.validate.outputs.version }}
+          CHECK_ID: ${{ needs.check.outputs.id }}
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ needs.validate.outputs.package_name }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve.outputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+          REQUEST_ACCEPTED: ${{ needs.resolve.outputs.accepted }}
+          REQUEST_ERROR: ${{ needs.resolve.outputs.error }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        run: |
+          set -euo pipefail
+
+          status=failure
+          title='Package candidate was not started'
+          stage=request
+          reason="$REQUEST_ERROR"
+          run_url="$GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          if [[ "$REQUEST_ACCEPTED" == true ]]; then
+            if [[ "$VALIDATE_RESULT" == success && "$PUBLISH_RESULT" == success ]]; then
+              status=success
+              title="Package candidate $CANDIDATE_VERSION generated"
+              stage=''
+              reason=''
+            elif [[ "$VALIDATE_RESULT" != success ]]; then
+              title='Package candidate validation failed'
+              stage=validation
+              reason='The candidate did not pass installation, formatting, lint, tests, build, or package validation.'
+            else
+              title='Package candidate publication failed'
+              stage=publication
+              reason='The validated package could not be published to its candidate prerelease.'
+            fi
+          fi
+
+          if [[ -n "$CHECK_ID" ]]; then
+            if [[ "$status" == success ]]; then
+              summary="Immutable candidate $CANDIDATE_VERSION was generated for $SOURCE_SHA."
+            else
+              summary="Stage: $stage. Reason: $reason"
+            fi
+            gh api --method PATCH "repos/$REPOSITORY/check-runs/$CHECK_ID" \
+              --raw-field status=completed \
+              --raw-field conclusion="$status" \
+              --raw-field details_url="$run_url" \
+              --raw-field "output[title]=$title" \
+              --raw-field "output[summary]=$summary" >/dev/null
+          fi
+
+          marker="<!-- mysql-mcp-server:candidate:$REPOSITORY:$PULL_REQUEST_NUMBER -->"
+          if [[ "$status" == success ]]; then
+            body="$(printf '%s\n\n## Package candidate generated\n\nVersion: `%s`\n\nPackage: [`%s`](%s)\n\nCommit: `%s`\n\nRun: %s' "$marker" "$CANDIDATE_VERSION" "$PACKAGE_NAME" "$ARTIFACT_URL" "$SOURCE_SHA" "$run_url")"
+          else
+            body="$(printf '%s\n\n## Package candidate unavailable\n\nStage: `%s`\n\nReason: %s\n\nRun: %s\n\nVerify the release branch and retry `/generate-candidate`.' "$marker" "$stage" "$reason" "$run_url")"
+          fi
+
+          comments="$(gh api "repos/$REPOSITORY/issues/$PULL_REQUEST_NUMBER/comments" --paginate)"
+          comment_id="$(jq --raw-output --arg marker "$marker" '[.[] | select((.user.login == "github-actions[bot]" or .user.id == 41898282) and (.body | startswith($marker)))] | first | .id // empty' <<<"$comments")"
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --raw-field body="$body" >/dev/null
+          else
+            gh api --method POST "repos/$REPOSITORY/issues/$PULL_REQUEST_NUMBER/comments" --raw-field body="$body" >/dev/null
+          fi

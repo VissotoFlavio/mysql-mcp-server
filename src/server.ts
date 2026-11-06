@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -17,9 +20,13 @@ import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
 import { registerUpdateRowsTool } from './tools/update-rows.js';
 
+const packageMetadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
+
 const SERVER_INFO = Object.freeze({
   name: 'mysql-mcp-server',
-  version: '0.2.0',
+  version: packageMetadata.version,
 });
 
 export interface McpApplicationOptions {
