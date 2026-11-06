@@ -18,6 +18,7 @@ export interface SafeDdlOutcome {
     | 'MYSQL_DDL_OUTCOME_UNKNOWN'
     | 'MYSQL_DDL_PERMISSION_DENIED'
     | 'MYSQL_DDL_TABLE_EXISTS'
+    | 'MYSQL_DDL_INDEX_EXISTS'
     | 'MYSQL_DDL_LOCK_TIMEOUT'
     | 'MYSQL_DDL_DEADLOCK'
     | 'MYSQL_DDL_STRUCTURE_INVALID';
@@ -70,6 +71,7 @@ const OUTCOMES = {
   },
   permission: { result: 'rejected', code: 'MYSQL_DDL_PERMISSION_DENIED', message: 'MySQL denied permission for this DDL operation.' },
   tableExists: { result: 'failed', code: 'MYSQL_DDL_TABLE_EXISTS', message: 'The target table already exists.' },
+  indexExists: { result: 'failed', code: 'MYSQL_DDL_INDEX_EXISTS', message: 'The requested index name or definition already exists.' },
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
   structure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'MySQL rejected the table structure.' },
@@ -78,6 +80,15 @@ const OUTCOMES = {
 function safeInstanceOf(value: unknown, constructor: { [Symbol.hasInstance](value: unknown): boolean }): boolean {
   try {
     return constructor[Symbol.hasInstance](value);
+  } catch {
+    return false;
+  }
+}
+function hasSafeCode(value: unknown, code: string): boolean {
+  try {
+    if (typeof value !== 'object' || value === null) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'code');
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value') && descriptor.value === code;
   } catch {
     return false;
   }
@@ -126,6 +137,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     )
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
+    if (hasSafeCode(error, 'MYSQL_DDL_INDEX_EXISTS')) return OUTCOMES.indexExists;
     if (safeInstanceOf(error, DdlDriverError)) {
       const classification = classifyDdlDriverCode((error as DdlDriverError).driverCode);
       return classification === undefined ? OUTCOMES.failed : OUTCOMES[classification];
