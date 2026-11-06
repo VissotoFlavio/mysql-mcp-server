@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-06
+
 - [#69 — ddl: expose controlled create_index MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/69)
 
 ## 0.3.0 - 2026-11-05
