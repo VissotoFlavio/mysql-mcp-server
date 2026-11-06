@@ -36,6 +36,24 @@ test('audits CREATE INDEX requests with their own operation and sanitized target
   assert.doesNotMatch(lines.join('\n'), /CREATE INDEX/i);
 });
 
+test('audits ALTER TABLE ADD COLUMN as one bounded operation without SQL', () => {
+  const lines: string[] = [];
+  const request = {
+    schema: 'app',
+    table: 'accounts',
+    column: { name: 'nickname', type: { kind: 'varchar' as const, length: 100 }, nullable: true },
+    reason: 'Add an optional account nickname.',
+  };
+  const attempt = createDdlAuditAttempt(request, { writer: (line) => lines.push(line), operationId: () => 'alter-op', now: () => 1_000 });
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'alter_table_add_column');
+  assert.deepEqual(completed.target, { schema: 'app', table: 'accounts' });
+  assert.equal(completed.columnCount, 1);
+  assert.equal(completed.primaryKeyColumnCount, null);
+  assert.doesNotMatch(lines.join('\n'), /ALTER TABLE|VARCHAR\(100\)/i);
+});
+
 test('hashes normalized CREATE TABLE requests and emits only sanitized structural audit data', () => {
   const first = request();
   const equivalent = {
@@ -69,6 +87,7 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new DdlDisabledError(), false, 'MYSQL_DDL_DISABLED', undefined],
     [new DdlDriverError('ER_TABLE_EXISTS_ERROR', true), true, 'MYSQL_DDL_TABLE_EXISTS', undefined],
     [new DdlDriverError('ER_DUP_KEYNAME', true), true, 'MYSQL_DDL_INDEX_EXISTS', undefined],
+    [new DdlDriverError('ER_DUP_FIELDNAME', true), true, 'MYSQL_DDL_COLUMN_EXISTS', undefined],
     [new DdlDriverError('ER_ACCESS_DENIED_ERROR', true), true, 'MYSQL_DDL_PERMISSION_DENIED', undefined],
     [new DdlDriverError('ER_TOO_MANY_FIELDS', true), true, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
     [new DdlDriverError('ER_LOCK_WAIT_TIMEOUT', true), true, 'MYSQL_DDL_LOCK_TIMEOUT', undefined],
