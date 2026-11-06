@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-05
+
 - [#66 — ci: generate an installable package candidate from a release pull request](https://github.com/VissotoFlavio/mysql-mcp-server/issues/66)
 
 - [#64 — ci: publish a GitHub Release after a merged release branch](https://github.com/VissotoFlavio/mysql-mcp-server/issues/64)
