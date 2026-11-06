@@ -1,5 +1,6 @@
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeAlterTableAddForeignKeyInput, type AlterTableAddForeignKeyInput } from '../tools/alter-table-add-foreign-key-input.js';
+import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput } from '../tools/alter-table-rename-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
@@ -17,6 +18,9 @@ export interface BuiltAlterTableAddColumnStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableAddForeignKeyStatement {
+  readonly sql: string;
+}
+export interface BuiltAlterTableRenameColumnStatement {
   readonly sql: string;
 }
 
@@ -96,5 +100,13 @@ export function buildAlterTableAddForeignKeyStatement(input: AlterTableAddForeig
   const normalized = normalizeAlterTableAddForeignKeyInput(input);
   return Object.freeze({
     sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} ADD CONSTRAINT ${escapeIdentifier(normalized.constraint)} FOREIGN KEY (${normalized.columns.map(escapeIdentifier).join(', ')}) REFERENCES ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.referencedTable)} (${normalized.referencedColumns.map(escapeIdentifier).join(', ')}) ON DELETE ${normalized.onDelete} ON UPDATE ${normalized.onUpdate}`,
+  });
+}
+
+/** Produces the canonical one-column RENAME COLUMN statement. */
+export function buildAlterTableRenameColumnStatement(input: AlterTableRenameColumnInput): BuiltAlterTableRenameColumnStatement {
+  const normalized = normalizeAlterTableRenameColumnInput(input);
+  return Object.freeze({
+    sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} RENAME COLUMN ${escapeIdentifier(normalized.column)} TO ${escapeIdentifier(normalized.newColumn)}`,
   });
 }

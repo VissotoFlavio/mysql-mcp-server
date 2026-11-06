@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#72 — ddl: expose controlled alter_table_rename_column MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/72)
+
 ## 0.7.0 - 2026-11-06
 
 - [#74 — ddl: expose controlled alter_table_add_foreign_key MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/74)

@@ -240,6 +240,29 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.equal(foreignKeyResult.operation, 'alter_table_add_foreign_key');
     assert.deepEqual(foreignKeyResult.target, { schema, table, constraint: 'mcp_ddl_test_parent_fk' });
 
+    const renameColumnResponse = await request('tools/call', {
+      name: 'alter_table_rename_column',
+      arguments: {
+        schema,
+        table,
+        column: 'note',
+        newColumn: 'renamed_note',
+        reason: 'Run the isolated ALTER TABLE RENAME COLUMN integration contract',
+      },
+    });
+    const renameColumnResult = renameColumnResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; column: string; newColumn: string };
+    };
+    assert.equal(renameColumnResult.operation, 'alter_table_rename_column');
+    assert.deepEqual(renameColumnResult.target, { schema, table, column: 'note', newColumn: 'renamed_note' });
+    const afterRenameResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    const afterRename = afterRenameResponse.result?.structuredContent as {
+      columns: readonly { columnName: string; dataType: string; isNullable: boolean }[];
+    };
+    assert.ok(afterRename.columns.some((column) => column.columnName === 'renamed_note' && column.dataType === 'varchar' && column.isNullable));
+    assert.ok(!afterRename.columns.some((column) => column.columnName === 'note'));
+
     await application.close();
     applicationClosed = true;
     const verificationConnection = await mysql.createConnection({
