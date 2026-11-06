@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildAlterTableAddColumnStatement,
   buildAlterTableAddForeignKeyStatement,
+  buildAlterTableRenameColumnStatement,
   buildCreateIndexStatement,
   buildCreateTableStatement,
   buildCreateUniqueIndexStatement,
@@ -11,6 +12,7 @@ import {
 import {
   assertAlterTableAddColumnSql,
   assertAlterTableAddForeignKeySql,
+  assertAlterTableRenameColumnSql,
   assertCreateIndexSql,
   assertCreateTableSql,
   assertCreateUniqueIndexSql,
@@ -75,6 +77,24 @@ test('renders only a canonical nullable ALTER TABLE ADD COLUMN statement', () =>
     'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL, ADD COLUMN `other` INT NULL',
   ])
     assert.throws(() => assertAlterTableAddColumnSql(sql));
+});
+
+test('renders only a canonical ALTER TABLE RENAME COLUMN statement', () => {
+  const statement = buildAlterTableRenameColumnStatement({
+    schema: 'app',
+    table: 'accounts',
+    column: 'nickname',
+    newColumn: 'display_name',
+    reason: 'Clarify the account field.',
+  });
+  assert.equal(statement.sql, 'ALTER TABLE `app`.`accounts` RENAME COLUMN `nickname` TO `display_name`');
+  assert.doesNotThrow(() => assertAlterTableRenameColumnSql(statement.sql));
+  for (const sql of [
+    'ALTER TABLE `app`.`accounts` RENAME COLUMN `nickname` TO `nickname`',
+    'ALTER TABLE `app`.`accounts` RENAME `nickname` TO `display_name`',
+    'ALTER TABLE `app`.`accounts` RENAME COLUMN `nickname` TO `display_name`, RENAME COLUMN `email` TO `address`',
+  ])
+    assert.throws(() => assertAlterTableRenameColumnSql(sql));
 });
 
 test('renders only a canonical intra-schema ALTER TABLE ADD CONSTRAINT FOREIGN KEY statement', () => {
