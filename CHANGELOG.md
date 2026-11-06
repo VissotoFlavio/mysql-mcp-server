@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#66 — ci: generate an installable package candidate from a release pull request](https://github.com/VissotoFlavio/mysql-mcp-server/issues/66)
+
 - [#64 — ci: publish a GitHub Release after a merged release branch](https://github.com/VissotoFlavio/mysql-mcp-server/issues/64)
 
 - [#61 — test: support DDL integration with one simultaneous connection](https://github.com/VissotoFlavio/mysql-mcp-server/issues/61)
