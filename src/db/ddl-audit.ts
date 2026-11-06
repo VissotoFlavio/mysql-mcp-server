@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  AlterTableAddColumnInputValidationError,
+  normalizeAlterTableAddColumnInput,
+  type AlterTableAddColumnInput,
+} from '../tools/alter-table-add-column-input.js';
 import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 
@@ -8,7 +13,7 @@ import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, Quer
 import { DdlPolicyError } from './sql-policy.js';
 
 export type DdlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
-export type DdlAuditOperation = 'create_table' | 'create_index' | 'invalid';
+export type DdlAuditOperation = 'create_table' | 'create_index' | 'alter_table_add_column' | 'invalid';
 export interface SafeDdlOutcome {
   readonly result: DdlAuditResult;
   readonly code:
@@ -19,6 +24,7 @@ export interface SafeDdlOutcome {
     | 'MYSQL_DDL_PERMISSION_DENIED'
     | 'MYSQL_DDL_TABLE_EXISTS'
     | 'MYSQL_DDL_INDEX_EXISTS'
+    | 'MYSQL_DDL_COLUMN_EXISTS'
     | 'MYSQL_DDL_LOCK_TIMEOUT'
     | 'MYSQL_DDL_DEADLOCK'
     | 'MYSQL_DDL_STRUCTURE_INVALID';
@@ -56,7 +62,7 @@ export interface DdlAuditAttempt {
   emit(outcome?: Readonly<{ error?: unknown }>): DdlAuditEvent;
 }
 
-type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | CreateIndexInput | null }>;
+type NormalizedRequest = Readonly<{ operation: DdlAuditOperation; input: CreateTableInput | CreateIndexInput | AlterTableAddColumnInput | null }>;
 const INVALID_REQUEST: NormalizedRequest = Object.freeze({ operation: 'invalid', input: null });
 const DEFAULT_WRITER: DdlAuditWriter = (line) => process.stderr.write(`${line}\n`);
 const OUTCOMES = {
@@ -72,6 +78,7 @@ const OUTCOMES = {
   permission: { result: 'rejected', code: 'MYSQL_DDL_PERMISSION_DENIED', message: 'MySQL denied permission for this DDL operation.' },
   tableExists: { result: 'failed', code: 'MYSQL_DDL_TABLE_EXISTS', message: 'The target table already exists.' },
   indexExists: { result: 'failed', code: 'MYSQL_DDL_INDEX_EXISTS', message: 'The requested index name or definition already exists.' },
+  columnExists: { result: 'failed', code: 'MYSQL_DDL_COLUMN_EXISTS', message: 'The requested column already exists.' },
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
   structure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'MySQL rejected the table structure.' },
@@ -102,21 +109,31 @@ function normalizeRequest(request: unknown): NormalizedRequest {
   try {
     return Object.freeze({ operation: 'create_index', input: normalizeCreateIndexInput(request) });
   } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'alter_table_add_column', input: normalizeAlterTableAddColumnInput(request) });
+  } catch {
     return INVALID_REQUEST;
   }
 }
 function canonicalRequest(request: NormalizedRequest): object {
   if (request.input === null) return { operation: 'invalid' };
   const input = request.input;
+  const inputWithColumns = input as CreateTableInput | CreateIndexInput;
   return {
     operation: request.operation,
     target: { schema: input.schema, table: input.table },
     reason: input.reason,
-    columns: input.columns.map((column) =>
-      typeof column === 'string'
-        ? column
-        : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-    ),
+    ...(request.operation === 'alter_table_add_column'
+      ? { column: (input as AlterTableAddColumnInput).column }
+      : {
+          columns: inputWithColumns.columns.map((column) =>
+            typeof column === 'string'
+              ? column
+              : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+          ),
+        }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -132,12 +149,14 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     if (
       safeInstanceOf(error, CreateTableInputValidationError) ||
       safeInstanceOf(error, CreateIndexInputValidationError) ||
+      safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
       safeInstanceOf(error, DdlPolicyError) ||
       safeInstanceOf(error, DdlAuditInputError)
     )
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
     if (hasSafeCode(error, 'MYSQL_DDL_INDEX_EXISTS')) return OUTCOMES.indexExists;
+    if (hasSafeCode(error, 'MYSQL_DDL_COLUMN_EXISTS')) return OUTCOMES.columnExists;
     if (safeInstanceOf(error, DdlDriverError)) {
       const classification = classifyDdlDriverCode((error as DdlDriverError).driverCode);
       return classification === undefined ? OUTCOMES.failed : OUTCOMES[classification];
@@ -183,7 +202,8 @@ function baseEvent(
               : { schema: input.schema, table: input.table },
           ),
     reason: input?.reason ?? '[invalid]',
-    columnCount: input?.columns.length ?? null,
+    columnCount:
+      input === null ? null : normalized.operation === 'alter_table_add_column' ? 1 : (input as CreateTableInput | CreateIndexInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };

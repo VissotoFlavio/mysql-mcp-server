@@ -90,7 +90,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       readonly annotations?: Record<string, unknown>;
     }>;
     assert.equal(
-      disabledTools.some(({ name }) => name === 'create_table' || name === 'create_index'),
+      disabledTools.some(({ name }) => name === 'create_table' || name === 'create_index' || name === 'alter_table_add_column'),
       false,
     );
     assert.deepEqual(enabledTools.find(({ name }) => name === 'create_table')?.annotations, {
@@ -105,13 +105,19 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       idempotentHint: false,
       openWorldHint: true,
     });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_add_column')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
     assert.equal(
       enabledTools.some(({ name }) => name === 'insert_rows'),
       false,
     );
     assert.deepEqual(
       enabledTools
-        .filter(({ name }) => name !== 'create_table' && name !== 'create_index')
+        .filter(({ name }) => name !== 'create_table' && name !== 'create_index' && name !== 'alter_table_add_column')
         .map(({ name }) => name)
         .sort(),
       disabledTools.map(({ name }) => name).sort(),
@@ -119,6 +125,88 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
   } finally {
     await disabledClient.close();
     await enabledClient.close();
+  }
+});
+
+test('adds one nullable column only after table and duplicate-column preflight', async () => {
+  let executed: unknown;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[{ schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'id', ordinalPosition: 1 }], []];
+          },
+          async execute(options: unknown) {
+            executed = options;
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'alter_table_add_column',
+      arguments: {
+        schema: 'app',
+        table: 'accounts',
+        column: { name: 'nickname', type: { kind: 'varchar', length: 100 }, nullable: true },
+        reason: 'Add an optional account nickname.',
+      },
+    });
+    assert.equal(response.result?.isError, undefined);
+    const result = JSON.parse(toolText(response)) as Record<string, unknown>;
+    assert.deepEqual(result.target, { schema: 'app', table: 'accounts', column: 'nickname' });
+    assert.equal(result.operation, 'alter_table_add_column');
+    assert.deepEqual(executed, { sql: 'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL', timeout: 30_000 });
+  } finally {
+    await client.close();
+  }
+});
+
+test('returns a sanitized ALTER TABLE failure without retrying', async () => {
+  let calls = 0;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[{ schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'id', ordinalPosition: 1 }], []];
+          },
+          async execute() {
+            calls += 1;
+            throw Object.assign(new Error('deadlock ddl-secret'), { code: 'ER_LOCK_DEADLOCK' });
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'alter_table_add_column',
+      arguments: {
+        schema: 'app',
+        table: 'accounts',
+        column: { name: 'nickname', type: { kind: 'varchar', length: 100 }, nullable: true },
+        reason: 'Add an optional account nickname.',
+      },
+    });
+    assert.equal(response.result?.isError, true);
+    assert.deepEqual(response.result?.structuredContent, {
+      code: 'MYSQL_DDL_DEADLOCK',
+      message: 'The DDL operation encountered a deadlock.',
+    });
+    assert.equal(calls, 1);
+    assert.doesNotMatch(JSON.stringify(response), /ddl-secret|ALTER TABLE|VARCHAR/);
+  } finally {
+    await client.close();
   }
 });
 

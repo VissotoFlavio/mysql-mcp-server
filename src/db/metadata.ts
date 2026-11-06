@@ -92,6 +92,23 @@ const VALIDATE_CREATE_INDEX_METADATA_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL = `
+  SELECT
+    tables.TABLE_SCHEMA AS schemaName,
+    tables.TABLE_NAME AS tableName,
+    tables.TABLE_TYPE AS tableType,
+    columns.COLUMN_NAME AS columnName,
+    columns.ORDINAL_POSITION AS ordinalPosition
+  FROM information_schema.TABLES AS tables
+  INNER JOIN information_schema.COLUMNS AS columns
+    ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+    AND columns.TABLE_NAME = tables.TABLE_NAME
+  WHERE tables.TABLE_SCHEMA = ?
+    AND tables.TABLE_NAME = ?
+  ORDER BY columns.ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+
 const VALIDATE_CREATE_INDEX_STATISTICS_SQL = `
   SELECT
     TABLE_SCHEMA AS schemaName,
@@ -163,6 +180,14 @@ interface CreateIndexStatisticRow extends RowDataPacket {
   readonly indexType: string;
 }
 
+interface AlterTableAddColumnMetadataRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly tableType: string;
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+}
+
 export interface SchemaMetadata {
   readonly schemaName: string;
 }
@@ -224,6 +249,18 @@ export class CreateIndexMetadataError extends Error {
   }
 }
 
+export type AlterTableAddColumnMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
+
+export class AlterTableAddColumnMetadataError extends Error {
+  readonly code: AlterTableAddColumnMetadataCode;
+
+  constructor(code: AlterTableAddColumnMetadataCode, message: string) {
+    super(message);
+    this.name = 'AlterTableAddColumnMetadataError';
+    this.code = code;
+  }
+}
+
 const DML_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const DML_METADATA_BASE_TABLE_ONLY = 'DML metadata is supported for base tables only.';
 const DML_METADATA_UNKNOWN_COLUMN = 'One or more supplied DML columns are unknown or inaccessible.';
@@ -233,6 +270,9 @@ const CREATE_INDEX_METADATA_UNAVAILABLE = 'Unable to validate the requested inde
 const CREATE_INDEX_METADATA_BASE_TABLE_ONLY = 'CREATE INDEX metadata is supported for base tables only.';
 const CREATE_INDEX_METADATA_COLUMN_INVALID = 'One or more supplied index columns are unknown, generated, or invisible.';
 const CREATE_INDEX_METADATA_EXISTS = 'The requested index name or definition already exists.';
+const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
+const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
+const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -555,4 +595,51 @@ export async function validateCreateIndexMetadata(
     )
       throw new CreateIndexMetadataError('MYSQL_DDL_INDEX_EXISTS', CREATE_INDEX_METADATA_EXISTS);
   }
+}
+
+/** @internal Reads bounded table metadata before one ALTER TABLE ADD COLUMN attempt. */
+export async function validateAlterTableAddColumnMetadata(mysql: ConnectionLayer, schema: string, table: string, column: string): Promise<void> {
+  let rows: AlterTableAddColumnMetadataRow[];
+  try {
+    [rows] = await mysql.query<AlterTableAddColumnMetadataRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL), [
+      schema,
+      table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+  }
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS)
+    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+
+  const first = rows[0];
+  const names = new Set<string>();
+  const ordinals = new Set<number>();
+  if (first === undefined || typeof first !== 'object' || first === null)
+    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.tableType) ||
+      !isNonEmptyString(row.columnName) ||
+      !Number.isInteger(row.ordinalPosition) ||
+      row.ordinalPosition <= 0 ||
+      row.schemaName !== schema ||
+      row.tableName !== table ||
+      row.tableType !== first.tableType ||
+      names.has(row.columnName) ||
+      ordinals.has(row.ordinalPosition)
+    )
+      throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+    names.add(row.columnName);
+    ordinals.add(row.ordinalPosition);
+  }
+  if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1))
+    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+  if (first.tableType !== 'BASE TABLE')
+    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_TABLE_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY);
+  if (names.has(column)) throw new AlterTableAddColumnMetadataError('MYSQL_DDL_COLUMN_EXISTS', ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS);
 }

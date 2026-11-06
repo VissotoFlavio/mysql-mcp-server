@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildCreateIndexStatement, buildCreateTableStatement } from '../../src/db/ddl-builder.js';
-import { assertCreateIndexSql, assertCreateTableSql } from '../../src/db/sql-policy.js';
+import { buildAlterTableAddColumnStatement, buildCreateIndexStatement, buildCreateTableStatement } from '../../src/db/ddl-builder.js';
+import { assertAlterTableAddColumnSql, assertCreateIndexSql, assertCreateTableSql } from '../../src/db/sql-policy.js';
+import { normalizeAlterTableAddColumnInput } from '../../src/tools/alter-table-add-column-input.js';
 import { normalizeCreateIndexInput } from '../../src/tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH, normalizeCreateTableInput } from '../../src/tools/create-table-input.js';
 
@@ -24,6 +25,26 @@ test('renders only canonical plain CREATE INDEX SQL', () => {
     'CREATE INDEX `x` ON `app`.`orders` (`id`) ALGORITHM=INPLACE',
   ])
     assert.throws(() => assertCreateIndexSql(sql));
+});
+
+test('renders only a canonical nullable ALTER TABLE ADD COLUMN statement', () => {
+  const statement = buildAlterTableAddColumnStatement(
+    normalizeAlterTableAddColumnInput({
+      schema: 'app',
+      table: 'accounts',
+      column: { name: 'nickname', type: { kind: 'varchar', length: 100 }, nullable: true },
+      reason: 'Add an optional profile nickname.',
+    }),
+  );
+  assert.equal(statement.sql, 'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL');
+  assert.doesNotThrow(() => assertAlterTableAddColumnSql(statement.sql));
+  for (const sql of [
+    'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NOT NULL',
+    "ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL DEFAULT 'anonymous'",
+    'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL FIRST',
+    'ALTER TABLE `app`.`accounts` ADD COLUMN `nickname` VARCHAR(100) NULL, ADD COLUMN `other` INT NULL',
+  ])
+    assert.throws(() => assertAlterTableAddColumnSql(sql));
 });
 
 test('renders every supported CREATE TABLE column form deterministically', () => {
