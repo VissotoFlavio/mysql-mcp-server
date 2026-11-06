@@ -26,6 +26,7 @@ export interface ConnectionConfig {
   readonly user: string;
   readonly password: string;
   readonly dmlEnabled: boolean;
+  readonly ddlEnabled: boolean;
   readonly poolLimit: number;
   readonly queueLimit: number;
   readonly connectTimeoutMs: number;
@@ -90,6 +91,23 @@ function integerValue(environment: Environment, name: string, fallback: number, 
 
 function booleanValue(environment: Environment, name: string, fallback: boolean): boolean {
   const raw = optionalValue(environment, name);
+  if (raw === undefined) {
+    return fallback;
+  }
+
+  if (raw === 'true') {
+    return true;
+  }
+
+  if (raw === 'false') {
+    return false;
+  }
+
+  throw configurationError(`${name} must be true or false.`);
+}
+
+function strictBooleanValue(environment: Environment, name: string, fallback: boolean): boolean {
+  const raw = environment[name];
   if (raw === undefined) {
     return fallback;
   }
@@ -193,6 +211,7 @@ export function loadConnectionConfig(
     user: validateIdentifier(requiredValue(environment, 'MYSQL_USER'), 'MYSQL_USER'),
     password: requiredValue(environment, 'MYSQL_PASSWORD', true),
     dmlEnabled: booleanValue(environment, 'MYSQL_DML_ENABLED', false),
+    ddlEnabled: strictBooleanValue(environment, 'MYSQL_DDL_ENABLED', false),
     poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
     queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),
     connectTimeoutMs: integerValue(environment, 'MYSQL_CONNECT_TIMEOUT_MS', DEFAULTS.connectTimeoutMs, { min: 100, max: 60_000 }),

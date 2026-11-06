@@ -2,8 +2,12 @@ import type { ExecuteValues } from 'mysql2';
 import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues } from 'mysql2/promise';
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
+import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 
+import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
+import { buildCreateTableStatement } from './ddl-builder.js';
+import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
 import type { DmlAuditAttempt, DmlAuditRequest, DmlAuditWriter } from './dml-audit.js';
 import {
   buildDeleteStatement,
@@ -15,7 +19,7 @@ import {
   type UpdateDmlBuilderInput,
 } from './dml-builder.js';
 import { sanitizeDmlDriverCode } from './dml-error-codes.js';
-import { assertDmlSql, DmlPolicyError, assertReadOnlySql } from './sql-policy.js';
+import { assertCreateTableSql, assertDmlSql, DdlPolicyError, DmlPolicyError, assertReadOnlySql } from './sql-policy.js';
 
 export class ConnectionError extends Error {
   readonly code: string = 'MYSQL_CONNECTION_FAILED';
@@ -46,6 +50,15 @@ export class DmlDisabledError extends ConnectionError {
   }
 }
 
+export class DdlDisabledError extends ConnectionError {
+  readonly code = 'MYSQL_DDL_DISABLED';
+
+  constructor() {
+    super('DDL execution is disabled.');
+    this.name = 'DdlDisabledError';
+  }
+}
+
 /** @internal Carries only an allowlisted MySQL classification, never driver text. */
 export class DmlDriverError extends ConnectionError {
   readonly driverCode: string | undefined;
@@ -57,12 +70,32 @@ export class DmlDriverError extends ConnectionError {
   }
 }
 
+/** @internal Carries only an allowlisted MySQL classification, never driver text. */
+export class DdlDriverError extends ConnectionError {
+  readonly driverCode: string | undefined;
+
+  constructor(driverCode: string | undefined, submitted = false) {
+    super('Unable to execute the CREATE TABLE statement.', submitted);
+    this.name = 'DdlDriverError';
+    this.driverCode = driverCode;
+  }
+}
+
 export class DmlResultError extends ConnectionError {
   readonly code = 'MYSQL_DML_RESULT_INVALID';
 
   constructor() {
     super('The DML result was invalid.', true);
     this.name = 'DmlResultError';
+  }
+}
+
+export class DdlResultError extends ConnectionError {
+  readonly code = 'MYSQL_DDL_RESULT_INVALID';
+
+  constructor() {
+    super('The CREATE TABLE result was invalid.', true);
+    this.name = 'DdlResultError';
   }
 }
 
@@ -80,6 +113,11 @@ export function wasDmlSubmitted(error: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/** Indicates whether a controlled DDL request may have reached MySQL. */
+export function wasDdlSubmitted(error: unknown): boolean {
+  return wasDmlSubmitted(error);
 }
 
 const MYSQL_BIGINT_UNSIGNED_MAX = 18446744073709551615n;
@@ -103,6 +141,24 @@ function safeDriverCode(error: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function safeDdlDriverCode(error: unknown): string | undefined {
+  try {
+    if (typeof error !== 'object' || error === null) return undefined;
+    for (const key of ['code', 'errno']) {
+      try {
+        if (!Object.hasOwn(error, key)) continue;
+        const sanitized = sanitizeDdlDriverCode((error as Record<string, unknown>)[key]);
+        if (sanitized !== undefined) return sanitized;
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    /* safe fallback */
+  }
+  return undefined;
 }
 
 export interface PoolFactory {
@@ -223,15 +279,50 @@ function normalizeUpdateResult(result: unknown): NormalizedUpdateResult {
   }
 }
 
+export type CreateTableExecutionResult = Readonly<{
+  warningStatus: number;
+}>;
+
+function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult {
+  try {
+    if (typeof result !== 'object' || result === null || !Object.hasOwn(result, 'affectedRows') || !Object.hasOwn(result, 'warningStatus')) {
+      throw new DdlResultError();
+    }
+    const record = result as Record<string, unknown>;
+    if (
+      record.affectedRows !== 0 ||
+      typeof record.warningStatus !== 'number' ||
+      !Number.isSafeInteger(record.warningStatus) ||
+      record.warningStatus < 0
+    ) {
+      throw new DdlResultError();
+    }
+    return Object.freeze({ warningStatus: record.warningStatus });
+  } catch (error) {
+    if (safeInstanceOf(error, DdlResultError)) throw error;
+    throw new DdlResultError();
+  }
+}
+
 declare const dmlStatementBrand: unique symbol;
+declare const ddlStatementBrand: unique symbol;
 
 export interface DmlStatement {
   readonly [dmlStatementBrand]: true;
 }
 
+export interface CreateTableStatement {
+  readonly [ddlStatementBrand]: true;
+}
+
 export interface DmlConnectionLayer {
   executeDml<T extends QueryResult>(statement: DmlStatement): Promise<[T, import('mysql2').FieldPacket[]]>;
   executeDmlWithOperationId<T extends QueryResult>(statement: DmlStatement): Promise<[T, import('mysql2').FieldPacket[], string]>;
+}
+
+export interface DdlConnectionLayer {
+  executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult>;
+  executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
 }
 
 export interface ConnectionLayer {
@@ -247,7 +338,9 @@ export interface ConnectionLayer {
 
 export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dmlEnabled: boolean;
+  readonly ddlEnabled: boolean;
   readonly dml: DmlConnectionLayer;
+  readonly ddl: DdlConnectionLayer;
 }
 
 interface DmlStatementData {
@@ -257,6 +350,22 @@ interface DmlStatementData {
 }
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
+const ddlStatementRegistry = new WeakMap<CreateTableStatement, Readonly<{ sql: string; input: CreateTableInput }>>();
+
+/** Creates the only executable DDL capability, from a freshly normalized structured input. */
+export function createCreateTableStatement(input: CreateTableInput): CreateTableStatement {
+  let sql: string;
+  let normalized: CreateTableInput;
+  try {
+    normalized = normalizeCreateTableInput(input);
+    sql = buildCreateTableStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as CreateTableStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ sql, input: normalized }));
+  return statement;
+}
 
 function isPlainObject(value: object): boolean {
   const prototype = Object.getPrototypeOf(value);
@@ -427,7 +536,14 @@ export function createConnectionLayer({
   driver = mysql,
   readFile,
   dmlAuditWriter,
-}: Readonly<{ environment?: Environment; driver?: PoolFactory; readFile?: ReadFile; dmlAuditWriter?: DmlAuditWriter }> = {}): ConnectionLayerBundle {
+  ddlAuditWriter,
+}: Readonly<{
+  environment?: Environment;
+  driver?: PoolFactory;
+  readFile?: ReadFile;
+  dmlAuditWriter?: DmlAuditWriter;
+  ddlAuditWriter?: DdlAuditWriter;
+}> = {}): ConnectionLayerBundle {
   const config = loadConnectionConfig(environment, { readFile });
   const pool = createPool(config, driver);
   const queryOptions = Object.freeze({ timeout: config.queryTimeoutMs });
@@ -515,8 +631,59 @@ export function createConnectionLayer({
     },
   });
 
+  async function executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]> {
+    let statementData: Readonly<{ sql: string; input: CreateTableInput }> | undefined;
+    let auditRequest: CreateTableInput | undefined;
+    try {
+      if (typeof statement === 'object' && statement !== null && ddlStatementRegistry.has(statement))
+        statementData = ddlStatementRegistry.get(statement);
+      if (statementData !== undefined) auditRequest = statementData.input;
+    } catch {
+      statementData = undefined;
+      auditRequest = undefined;
+    }
+
+    let audit: DdlAuditAttempt;
+    try {
+      audit = (await import('./ddl-audit.js')).createDdlAuditAttempt(auditRequest, { writer: ddlAuditWriter });
+    } catch {
+      throw new ConnectionError('The DDL audit could not be started.');
+    }
+
+    let submitted = false;
+    try {
+      if (!config.ddlEnabled) throw new DdlDisabledError();
+      if (statementData === undefined) throw new DdlPolicyError();
+      assertCreateTableSql(statementData.sql);
+      audit.markSubmitted();
+      submitted = true;
+      const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
+      const normalizedResult = normalizeCreateTableResult(result);
+      audit.emit();
+      return [normalizedResult, audit.operationId];
+    } catch (error) {
+      let safeError: unknown;
+      if (isQueryTimeout(error)) safeError = new QueryTimeoutError(submitted);
+      else if (isTransportLoss(error)) safeError = new ConnectionError('Unable to execute the CREATE TABLE statement.', submitted);
+      else if (safeInstanceOf(error, DdlResultError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlDisabledError))
+        safeError = error;
+      else safeError = new DdlDriverError(safeDdlDriverCode(error), submitted);
+      audit.emit({ error: safeError });
+      throw safeError;
+    }
+  }
+
+  const ddl: DdlConnectionLayer = Object.freeze({
+    async executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeCreateTableWithOperationId(statement);
+      return result;
+    },
+    executeCreateTableWithOperationId,
+  });
+
   return Object.freeze({
     dmlEnabled: config.dmlEnabled,
+    ddlEnabled: config.ddlEnabled,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
     async query<T extends QueryResult>(
@@ -536,6 +703,7 @@ export function createConnectionLayer({
       }
     },
     dml,
+    ddl,
     async verifyConnection(): Promise<void> {
       await verifyConnection(pool);
     },

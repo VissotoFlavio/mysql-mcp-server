@@ -63,6 +63,28 @@ test('creates a bounded pool with secure driver options', async () => {
   assert.equal(suppliedOptions?.bigNumberStrings, true);
   assert.equal(suppliedOptions?.ssl, undefined);
   assert.equal(layer.dmlEnabled, false);
+  assert.equal(layer.ddlEnabled, false);
+
+  await layer.close();
+});
+
+test('exposes the DDL opt-in state without changing pool capabilities', async () => {
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+
+  assert.equal(layer.ddlEnabled, true);
+  assert.equal(layer.dmlEnabled, false);
 
   await layer.close();
 });

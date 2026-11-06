@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-05
+
+- [#66 — ci: generate an installable package candidate from a release pull request](https://github.com/VissotoFlavio/mysql-mcp-server/issues/66)
+
+- [#64 — ci: publish a GitHub Release after a merged release branch](https://github.com/VissotoFlavio/mysql-mcp-server/issues/64)
+
+- [#61 — test: support DDL integration with one simultaneous connection](https://github.com/VissotoFlavio/mysql-mcp-server/issues/61)
+
+- [#54 — docs: document and validate the controlled CREATE TABLE workflow](https://github.com/VissotoFlavio/mysql-mcp-server/issues/54)
+
+- [#53 — feat: expose controlled create_table MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/53)
+
+- [#52 — feat: add sanitized DDL auditing and outcomes](https://github.com/VissotoFlavio/mysql-mcp-server/issues/52)
+
+- [#51 — feat: add capability-bound CREATE TABLE execution](https://github.com/VissotoFlavio/mysql-mcp-server/issues/51)
+
+- [#50 — feat: validate structured CREATE TABLE specifications](https://github.com/VissotoFlavio/mysql-mcp-server/issues/50)
+- [#49 — feat: add opt-in DDL feature configuration](https://github.com/VissotoFlavio/mysql-mcp-server/issues/49)
+
 ## 0.2.0 - 2026-10-23
 
 - [#35 — docs: consolidate DML validation and sanitized workflow](https://github.com/VissotoFlavio/mysql-mcp-server/issues/35)

@@ -1,0 +1,150 @@
+name: Publish merged releases
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release-${{ github.repository }}-${{ github.event.pull_request.merge_commit_sha || github.event.pull_request.id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'master' &&
+      github.event.pull_request.base.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (startsWith(github.event.pull_request.head.ref, 'release/') ||
+      startsWith(github.event.pull_request.head.ref, 'hotfix/')) &&
+      github.event.pull_request.merge_commit_sha != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out merged release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Validate release metadata
+        id: release
+        env:
+          SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ "$SOURCE_BRANCH" == release/* ]]; then
+            version="${SOURCE_BRANCH#release/}"
+          elif [[ "$SOURCE_BRANCH" == hotfix/* ]]; then
+            version="${SOURCE_BRANCH#hotfix/}"
+          else
+            fail "The source branch must use release/<stable-semver> or hotfix/<stable-semver>."
+          fi
+
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            fail "The source branch must use a stable semantic version."
+          fi
+
+          package_version="$(node --input-type=module --eval "import fs from 'node:fs'; process.stdout.write(JSON.parse(fs.readFileSync('package.json', 'utf8')).version);")"
+          lock_version="$(node --input-type=module --eval "import fs from 'node:fs'; const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')); process.stdout.write(lock.version === lock.packages[''].version ? lock.version : '');")"
+          if [[ "$package_version" != "$version" || "$lock_version" != "$version" ]]; then
+            fail "The release branch version must match package.json and package-lock.json."
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Build distributable package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npm ci
+          npm run build
+          npm pack --json > "$RUNNER_TEMP/package.json"
+
+          package_file="$(node --input-type=module --eval "import fs from 'node:fs'; const [result] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/package.json', 'utf8')); const allowed = new Set(['.env.example', 'CHANGELOG.md', 'LICENSE', 'README.md', 'package.json']); const unexpected = result?.files?.map(({ path }) => path).filter((path) => !allowed.has(path) && !path.startsWith('dist/')) ?? []; if (!result?.filename || !result.files?.some(({ path }) => path === 'dist/server.js') || unexpected.length > 0) { process.stderr.write('npm pack did not produce the expected runtime-only package.\\n'); process.exit(1); } process.stdout.write(result.filename);")"
+          [[ -f "$package_file" ]] || {
+            echo "::error::npm pack did not produce the expected package file."
+            exit 1
+          }
+
+          echo "file=$package_file" >> "$GITHUB_OUTPUT"
+
+      - name: Create or verify tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          MERGE_SHA: ${{ steps.release.outputs.merge_sha }}
+          PACKAGE_FILE: ${{ steps.package.outputs.file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          tag_exists=false
+          if tag_ref="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" 2>/dev/null)"; then
+            tag_exists=true
+            tag_type="$(jq -r '.object.type' <<<"$tag_ref")"
+            tag_target="$(jq -r '.object.sha' <<<"$tag_ref")"
+            if [[ "$tag_type" == "tag" ]]; then
+              tag_target="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/git/tags/${tag_target}" --jq '.object.sha')"
+            fi
+            [[ "$tag_target" == "$MERGE_SHA" ]] || fail "Existing ${TAG} does not point to the merged release commit."
+          fi
+
+          release_exists=false
+          if release="$(gh release view "$TAG" --json targetCommitish 2>/dev/null)"; then
+            release_exists=true
+            release_target="$(jq -r '.targetCommitish' <<<"$release")"
+            [[ "$release_target" == "$MERGE_SHA" ]] || fail "Existing ${TAG} Release does not target the merged release commit."
+          fi
+
+          if [[ "$release_exists" == true && "$tag_exists" == false ]]; then
+            fail "A GitHub Release exists without its expected tag."
+          fi
+
+          if [[ "$release_exists" == false ]]; then
+            if [[ "$tag_exists" == true ]]; then
+              gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+            else
+              gh release create "$TAG" --target "$MERGE_SHA" --generate-notes --title "$TAG"
+            fi
+          fi
+
+          release_target="$(gh release view "$TAG" --json targetCommitish --jq '.targetCommitish')"
+          [[ "$release_target" == "$MERGE_SHA" ]] || fail "Created ${TAG} Release does not target the merged release commit."
+
+          package_name="$(basename "$PACKAGE_FILE")"
+          assets="$(gh release view "$TAG" --json assets --jq '.assets')"
+          if ! jq --exit-status --arg package_name "$package_name" '.[] | select(.name == $package_name)' <<<"$assets" >/dev/null; then
+            gh release upload "$TAG" "$PACKAGE_FILE"
+          fi
+
+          gh release view "$TAG" --json assets --jq '.assets[] | select(.name == $package_name)' >/dev/null

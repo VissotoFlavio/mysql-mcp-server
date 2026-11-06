@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -5,8 +8,10 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 import { type Environment, type ReadFile } from './config.js';
+import type { DdlAuditWriter } from './db/ddl-audit.js';
 import type { DmlAuditWriter } from './db/dml-audit.js';
 import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
+import { registerCreateTableTool } from './tools/create-table.js';
 import { registerDeleteRowsTool } from './tools/delete-rows.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
@@ -15,9 +20,13 @@ import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
 import { registerUpdateRowsTool } from './tools/update-rows.js';
 
+const packageMetadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
+
 const SERVER_INFO = Object.freeze({
   name: 'mysql-mcp-server',
-  version: '0.2.0',
+  version: packageMetadata.version,
 });
 
 export interface McpApplicationOptions {
@@ -25,6 +34,7 @@ export interface McpApplicationOptions {
   readonly driver?: PoolFactory;
   readonly readFile?: ReadFile;
   readonly dmlAuditWriter?: DmlAuditWriter;
+  readonly ddlAuditWriter?: DdlAuditWriter;
 }
 
 export interface McpApplication {
@@ -45,6 +55,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerUpdateRowsTool(server, mysql);
     registerDeleteRowsTool(server, mysql);
   }
+  if (mysql.ddlEnabled) registerCreateTableTool(server, mysql);
 
   return Object.freeze({
     mysql,
