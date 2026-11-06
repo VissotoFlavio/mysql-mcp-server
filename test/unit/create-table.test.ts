@@ -12,14 +12,14 @@ interface JsonRpcResponse {
   readonly result?: Record<string, unknown>;
 }
 
-function createApplication(execute?: (...args: unknown[]) => Promise<unknown>, ddlEnabled = true) {
+function createApplication(execute?: (...args: unknown[]) => Promise<unknown>, ddlEnabled = true, query?: (...args: unknown[]) => Promise<unknown>) {
   return createMcpApplication({
     environment: validEnvironment({ MYSQL_DDL_ENABLED: ddlEnabled ? 'true' : 'false' }),
     driver: {
       createPool() {
         return {
-          async query() {
-            return [[], []];
+          async query(...args: unknown[]) {
+            return query?.(...args) ?? [[], []];
           },
           async execute(...args: unknown[]) {
             return execute?.(...args) ?? [{ affectedRows: 0, warningStatus: 0 }, []];
@@ -106,7 +106,8 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
           name === 'create_index' ||
           name === 'create_unique_index' ||
           name === 'alter_table_add_column' ||
-          name === 'alter_table_add_foreign_key',
+          name === 'alter_table_add_foreign_key' ||
+          name === 'alter_table_rename_column',
       ),
       false,
     );
@@ -140,6 +141,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       idempotentHint: false,
       openWorldHint: true,
     });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_rename_column')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
     assert.equal(
       enabledTools.some(({ name }) => name === 'insert_rows'),
       false,
@@ -152,7 +159,8 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
             name !== 'create_index' &&
             name !== 'create_unique_index' &&
             name !== 'alter_table_add_column' &&
-            name !== 'alter_table_add_foreign_key',
+            name !== 'alter_table_add_foreign_key' &&
+            name !== 'alter_table_rename_column',
         )
         .map(({ name }) => name)
         .sort(),
@@ -161,6 +169,50 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
   } finally {
     await disabledClient.close();
     await enabledClient.close();
+  }
+});
+
+test('executes and sanitizes rename-column DDL outcomes without retrying', async () => {
+  const metadata = [{ schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE', columnName: 'nickname', ordinalPosition: 1 }];
+  for (const [failure, code, retryAdvice] of [
+    [Object.assign(new Error('permission secret'), { code: 'ER_TABLEACCESS_DENIED_ERROR' }), 'MYSQL_DDL_PERMISSION_DENIED', undefined],
+    [Object.assign(new Error('lock secret'), { code: 'ER_LOCK_WAIT_TIMEOUT' }), 'MYSQL_DDL_LOCK_TIMEOUT', undefined],
+    [Object.assign(new Error('deadlock secret'), { code: 'ER_LOCK_DEADLOCK' }), 'MYSQL_DDL_DEADLOCK', undefined],
+    [Object.assign(new Error('transport secret'), { code: 'ECONNRESET' }), 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
+  ] as const) {
+    let calls = 0;
+    const application = createApplication(
+      async () => {
+        calls += 1;
+        throw failure;
+      },
+      true,
+      async () => [metadata, []],
+    );
+    const client = await connect(application);
+    try {
+      const response = await client.request('tools/call', {
+        name: 'alter_table_rename_column',
+        arguments: { schema: 'app', table: 'accounts', column: 'nickname', newColumn: 'display_name', reason: 'Clarify account field.' },
+      });
+      const result = response.result?.structuredContent as { code: string; retryAdvice?: string };
+      assert.equal(result.code, code);
+      assert.equal(result.retryAdvice, retryAdvice);
+      assert.equal(calls, 1);
+      assert.doesNotMatch(JSON.stringify(response), /secret|ALTER TABLE/);
+    } finally {
+      await client.close();
+    }
+  }
+  const metadataFailure = await connect(createApplication(undefined, true));
+  try {
+    const response = await metadataFailure.request('tools/call', {
+      name: 'alter_table_rename_column',
+      arguments: { schema: 'app', table: 'accounts', column: 'nickname', newColumn: 'display_name', reason: 'Clarify account field.' },
+    });
+    assert.equal((response.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
+  } finally {
+    await metadataFailure.close();
   }
 });
 

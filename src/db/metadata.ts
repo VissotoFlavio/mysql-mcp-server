@@ -337,6 +337,17 @@ export class AlterTableAddColumnMetadataError extends Error {
     this.code = code;
   }
 }
+export type AlterTableRenameColumnMetadataCode =
+  'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
+export class AlterTableRenameColumnMetadataError extends Error {
+  constructor(
+    readonly code: AlterTableRenameColumnMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AlterTableRenameColumnMetadataError';
+  }
+}
 export type AlterTableAddForeignKeyMetadataCode =
   | 'MYSQL_DDL_METADATA_INVALID'
   | 'MYSQL_DDL_TABLE_INVALID'
@@ -366,6 +377,10 @@ const CREATE_UNIQUE_INDEX_DUPLICATE_DATA = 'The requested unique index cannot be
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
+const ALTER_TABLE_RENAME_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
+const ALTER_TABLE_RENAME_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE RENAME COLUMN metadata is supported for base tables only.';
+const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID = 'The source column is unknown or inaccessible.';
+const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_EXISTS = 'The destination column already exists.';
 const ALTER_TABLE_FOREIGN_KEY_METADATA_UNAVAILABLE = 'Unable to validate the requested foreign-key metadata.';
 const ALTER_TABLE_FOREIGN_KEY_TABLE_INVALID = 'Foreign keys are supported only between InnoDB base tables.';
 const ALTER_TABLE_FOREIGN_KEY_COLUMN_INVALID = 'One or more foreign-key columns are unknown, incompatible, or lack a required index.';
@@ -376,7 +391,7 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-function normalizedIndexName(value: string): string {
+function normalizedIdentifierName(value: string): string {
   return value.toLocaleLowerCase('en-US');
 }
 
@@ -676,7 +691,7 @@ async function validateIndexMetadata(
       statistic.tableName !== table
     )
       throw new CreateIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
-    const normalizedName = normalizedIndexName(statistic.indexName);
+    const normalizedName = normalizedIdentifierName(statistic.indexName);
     const entries = indexes.get(normalizedName) ?? [];
     if (entries.some(({ sequenceInIndex }) => sequenceInIndex === statistic.sequenceInIndex))
       throw new CreateIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
@@ -684,7 +699,7 @@ async function validateIndexMetadata(
     indexes.set(normalizedName, entries);
   }
 
-  if (indexes.has(normalizedIndexName(index)))
+  if (indexes.has(normalizedIdentifierName(index)))
     throw new CreateIndexMetadataError('MYSQL_DDL_INDEX_EXISTS', unique ? CREATE_UNIQUE_INDEX_METADATA_EXISTS : CREATE_INDEX_METADATA_EXISTS);
   for (const entries of indexes.values()) {
     const ordered = entries.sort((left, right) => left.sequenceInIndex - right.sequenceInIndex);
@@ -752,7 +767,13 @@ export async function validateCreateUniqueIndexMetadata(
 }
 
 /** @internal Reads bounded table metadata before one ALTER TABLE ADD COLUMN attempt. */
-export async function validateAlterTableAddColumnMetadata(mysql: ConnectionLayer, schema: string, table: string, column: string): Promise<void> {
+async function readBaseTableColumnNames(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+  normalizeName: (name: string) => string,
+  fail: (kind: 'metadata' | 'table') => never,
+): Promise<ReadonlySet<string>> {
   let rows: AlterTableAddColumnMetadataRow[];
   try {
     [rows] = await mysql.query<AlterTableAddColumnMetadataRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL), [
@@ -761,16 +782,13 @@ export async function validateAlterTableAddColumnMetadata(mysql: ConnectionLayer
       MAX_METADATA_RESULTS + 1,
     ]);
   } catch {
-    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+    fail('metadata');
   }
-  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS)
-    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
-
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS) fail('metadata');
   const first = rows[0];
   const names = new Set<string>();
   const ordinals = new Set<number>();
-  if (first === undefined || typeof first !== 'object' || first === null)
-    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
+  if (first === undefined || typeof first !== 'object' || first === null) fail('metadata');
   for (const row of rows) {
     if (
       typeof row !== 'object' ||
@@ -784,18 +802,52 @@ export async function validateAlterTableAddColumnMetadata(mysql: ConnectionLayer
       row.schemaName !== schema ||
       row.tableName !== table ||
       row.tableType !== first.tableType ||
-      names.has(row.columnName) ||
+      names.has(normalizeName(row.columnName)) ||
       ordinals.has(row.ordinalPosition)
     )
-      throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
-    names.add(row.columnName);
+      fail('metadata');
+    names.add(normalizeName(row.columnName));
     ordinals.add(row.ordinalPosition);
   }
-  if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1))
-    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE);
-  if (first.tableType !== 'BASE TABLE')
-    throw new AlterTableAddColumnMetadataError('MYSQL_DDL_TABLE_INVALID', ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY);
+  if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1)) fail('metadata');
+  if (first.tableType !== 'BASE TABLE') fail('table');
+  return names;
+}
+
+export async function validateAlterTableAddColumnMetadata(mysql: ConnectionLayer, schema: string, table: string, column: string): Promise<void> {
+  const names = await readBaseTableColumnNames(
+    mysql,
+    schema,
+    table,
+    (name) => name,
+    (kind) => {
+      throw new AlterTableAddColumnMetadataError(
+        kind === 'metadata' ? 'MYSQL_DDL_METADATA_INVALID' : 'MYSQL_DDL_TABLE_INVALID',
+        kind === 'metadata' ? ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE : ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY,
+      );
+    },
+  );
   if (names.has(column)) throw new AlterTableAddColumnMetadataError('MYSQL_DDL_COLUMN_EXISTS', ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS);
+}
+
+/** @internal Reads bounded metadata before one ALTER TABLE RENAME COLUMN attempt. */
+export async function validateAlterTableRenameColumnMetadata(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+  column: string,
+  newColumn: string,
+): Promise<void> {
+  const names = await readBaseTableColumnNames(mysql, schema, table, normalizedIdentifierName, (kind) => {
+    throw new AlterTableRenameColumnMetadataError(
+      kind === 'metadata' ? 'MYSQL_DDL_METADATA_INVALID' : 'MYSQL_DDL_TABLE_INVALID',
+      kind === 'metadata' ? ALTER_TABLE_RENAME_COLUMN_METADATA_UNAVAILABLE : ALTER_TABLE_RENAME_COLUMN_METADATA_BASE_TABLE_ONLY,
+    );
+  });
+  if (!names.has(normalizedIdentifierName(column)))
+    throw new AlterTableRenameColumnMetadataError('MYSQL_DDL_COLUMN_INVALID', ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID);
+  if (names.has(normalizedIdentifierName(newColumn)))
+    throw new AlterTableRenameColumnMetadataError('MYSQL_DDL_COLUMN_EXISTS', ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_EXISTS);
 }
 
 function foreignKeyError(code: AlterTableAddForeignKeyMetadataCode): AlterTableAddForeignKeyMetadataError {

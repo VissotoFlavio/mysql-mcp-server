@@ -354,6 +354,20 @@ export function assertAlterTableAddColumnSql(sql: string): void {
   if (!column.nullable || column.autoIncrement || afterColumn !== sql.length) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical one-column RENAME COLUMN grammar. */
+export function assertAlterTableRenameColumnSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'ALTER TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' RENAME COLUMN ');
+  const [oldName, afterOldName] = readIdentifier(sql, index);
+  index = readExpected(sql, afterOldName, ' TO ');
+  const [newName, afterNewName] = readIdentifier(sql, index);
+  if (oldName === newName || afterNewName !== sql.length) failDdlPolicy();
+}
+
 /** Defense in depth for the canonical, intra-schema ADD CONSTRAINT FOREIGN KEY grammar. */
 export function assertAlterTableAddForeignKeySql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
