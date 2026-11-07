@@ -37,6 +37,19 @@ test('audits CREATE INDEX requests with their own operation and sanitized target
   assert.doesNotMatch(lines.join('\n'), /CREATE INDEX/i);
 });
 
+test('hashes DROP INDEX requests with one canonical index field', () => {
+  const request = { schema: 'app', table: 'orders', index: 'orders_created_idx', reason: 'Remove redundant lookups.' };
+  const lines: string[] = [];
+  const attempt = createDdlAuditAttempt(request, { writer: (line) => lines.push(line), operationId: () => 'drop-index-op', now: () => 1_000 });
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'drop_index');
+  assert.deepEqual(completed.target, { schema: 'app', table: 'orders', index: 'orders_created_idx' });
+  assert.equal(completed.columnCount, null);
+  assert.equal(completed.requestHash, createDdlRequestHash(request));
+  assert.doesNotMatch(lines.join('\n'), /DROP INDEX/iu);
+});
+
 test('audits ALTER TABLE ADD COLUMN as one bounded operation without SQL', () => {
   const lines: string[] = [];
   const request = {

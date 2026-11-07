@@ -145,6 +145,17 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.equal(indexResult.operation, 'create_index');
     assert.deepEqual(indexResult.target, { schema, table, index: 'mcp_ddl_test_label_idx' });
 
+    const dropIndexResponse = await request('tools/call', {
+      name: 'drop_index',
+      arguments: { schema, table, index: 'mcp_ddl_test_label_idx', reason: 'Remove the isolated disposable lookup index' },
+    });
+    const dropIndexResult = dropIndexResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; index: string };
+    };
+    assert.equal(dropIndexResult.operation, 'drop_index');
+    assert.deepEqual(dropIndexResult.target, { schema, table, index: 'mcp_ddl_test_label_idx' });
+
     const foreignKeyIndexResponse = await request('tools/call', {
       name: 'create_index',
       arguments: {
@@ -187,6 +198,13 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     };
     assert.equal(uniqueIndexResult.operation, 'create_unique_index');
     assert.deepEqual(uniqueIndexResult.target, { schema, table, index: 'mcp_ddl_test_unique_value_uq' });
+
+    const protectedUniqueDropResponse = await request('tools/call', {
+      name: 'drop_index',
+      arguments: { schema, table, index: 'mcp_ddl_test_unique_value_uq', reason: 'Attempt to remove a protected unique index' },
+    });
+    assert.equal(protectedUniqueDropResponse.result?.isError, true);
+    assert.equal((protectedUniqueDropResponse.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
 
     const duplicateUniqueIndexResponse = await request('tools/call', {
       name: 'create_unique_index',
@@ -266,6 +284,13 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.equal(foreignKeyResult.operation, 'alter_table_add_foreign_key');
     assert.deepEqual(foreignKeyResult.target, { schema, table, constraint: 'mcp_ddl_test_parent_fk' });
 
+    const protectedForeignKeyIndexDropResponse = await request('tools/call', {
+      name: 'drop_index',
+      arguments: { schema, table, index: 'mcp_ddl_test_parent_id_idx', reason: 'Attempt to remove a foreign-key supporting index' },
+    });
+    assert.equal(protectedForeignKeyIndexDropResponse.result?.isError, true);
+    assert.equal((protectedForeignKeyIndexDropResponse.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
+
     const renameColumnResponse = await request('tools/call', {
       name: 'alter_table_rename_column',
       arguments: {
@@ -301,11 +326,11 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     });
     try {
       const [indexes] = await verificationConnection.query<IndexRow[]>(
-        'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME IN (?, ?) ORDER BY INDEX_NAME',
-        [schema, table, 'mcp_ddl_test_label_idx', 'mcp_ddl_test_unique_value_uq'],
+        'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME IN (?, ?, ?) ORDER BY INDEX_NAME',
+        [schema, table, 'mcp_ddl_test_label_idx', 'mcp_ddl_test_parent_id_idx', 'mcp_ddl_test_unique_value_uq'],
       );
       assert.deepEqual(indexes, [
-        { INDEX_NAME: 'mcp_ddl_test_label_idx', COLUMN_NAME: 'label', NON_UNIQUE: 1 },
+        { INDEX_NAME: 'mcp_ddl_test_parent_id_idx', COLUMN_NAME: 'parent_id', NON_UNIQUE: 1 },
         { INDEX_NAME: 'mcp_ddl_test_unique_value_uq', COLUMN_NAME: 'unique_value', NON_UNIQUE: 0 },
       ]);
       const [foreignKeys] = await verificationConnection.query<ForeignKeyRow[]>(
