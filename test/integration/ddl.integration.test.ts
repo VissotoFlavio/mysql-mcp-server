@@ -291,6 +291,22 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.equal(protectedForeignKeyIndexDropResponse.result?.isError, true);
     assert.equal((protectedForeignKeyIndexDropResponse.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
 
+    const dropForeignKeyResponse = await request('tools/call', {
+      name: 'alter_table_drop_foreign_key',
+      arguments: {
+        schema,
+        table,
+        constraint: 'mcp_ddl_test_parent_fk',
+        reason: 'Remove the isolated relationship while preserving its supporting index',
+      },
+    });
+    const dropForeignKeyResult = dropForeignKeyResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; constraint: string };
+    };
+    assert.equal(dropForeignKeyResult.operation, 'alter_table_drop_foreign_key');
+    assert.deepEqual(dropForeignKeyResult.target, { schema, table, constraint: 'mcp_ddl_test_parent_fk' });
+
     const renameColumnResponse = await request('tools/call', {
       name: 'alter_table_rename_column',
       arguments: {
@@ -346,16 +362,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
           ORDER BY key_columns.ORDINAL_POSITION ASC`,
         [schema, table, 'mcp_ddl_test_parent_fk'],
       );
-      assert.deepEqual(foreignKeys, [
-        {
-          CONSTRAINT_NAME: 'mcp_ddl_test_parent_fk',
-          COLUMN_NAME: 'parent_id',
-          REFERENCED_TABLE_NAME: parentTable,
-          REFERENCED_COLUMN_NAME: 'id',
-          UPDATE_RULE: 'NO ACTION',
-          DELETE_RULE: 'RESTRICT',
-        },
-      ]);
+      assert.deepEqual(foreignKeys, []);
       const [columnTypes] = await verificationConnection.query<ColumnTypeRow[]>(
         'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
         [schema, table, 'label'],

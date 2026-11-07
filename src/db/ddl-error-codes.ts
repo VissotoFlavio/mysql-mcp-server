@@ -35,6 +35,8 @@ export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverC
   1071: 'structure',
   ER_CANNOT_ADD_FOREIGN: 'structure',
   1215: 'structure',
+  ER_CANNOT_DROP_FIELD_OR_KEY: 'structure',
+  1091: 'structure',
   ER_ROW_IS_REFERENCED_2: 'structure',
   1451: 'structure',
   ER_NO_REFERENCED_ROW_2: 'structure',
