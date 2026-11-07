@@ -1,6 +1,6 @@
 {
   "name": "mysql-mcp-server",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Secure direct MySQL connection layer for an MCP server.",
   "type": "module",
