@@ -92,6 +92,19 @@ test('audits an ALTER TABLE ADD FOREIGN KEY request without recording referenced
   assert.doesNotMatch(lines.join('\n'), /ALTER TABLE|FOREIGN KEY|customers|customer_id|orders_customer_fk/iu);
 });
 
+test('audits DROP FOREIGN KEY with only the named target and no SQL', () => {
+  const lines: string[] = [];
+  const request = { schema: 'app', table: 'orders', constraint: 'orders_customer_fk', reason: 'Remove obsolete relationship.' };
+  const attempt = createDdlAuditAttempt(request, { writer: (line) => lines.push(line), operationId: () => 'drop-foreign-key-op', now: () => 1_000 });
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'alter_table_drop_foreign_key');
+  assert.deepEqual(completed.target, { schema: 'app', table: 'orders', constraint: 'orders_customer_fk' });
+  assert.equal(completed.columnCount, null);
+  assert.equal(completed.primaryKeyColumnCount, null);
+  assert.doesNotMatch(lines.join('\\n'), /ALTER TABLE|DROP FOREIGN KEY/iu);
+});
+
 test('audits RENAME TABLE with sanitized source and destination metadata', () => {
   const lines: string[] = [];
   const attempt = createDdlAuditAttempt(
@@ -145,6 +158,7 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new DdlDriverError('ER_ACCESS_DENIED_ERROR', true), true, 'MYSQL_DDL_PERMISSION_DENIED', undefined],
     [new DdlDriverError('ER_TOO_MANY_FIELDS', true), true, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
     [new DdlDriverError('ER_FK_DUP_NAME', true), true, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
+    [new DdlDriverError('ER_CANNOT_DROP_FIELD_OR_KEY', true), true, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
     [new DdlDriverError('ER_LOCK_WAIT_TIMEOUT', true), true, 'MYSQL_DDL_LOCK_TIMEOUT', undefined],
     [new DdlDriverError('ER_LOCK_DEADLOCK', true), true, 'MYSQL_DDL_DEADLOCK', undefined],
     [new DdlDriverError('1049', true), true, 'MYSQL_DDL_FAILED', undefined],

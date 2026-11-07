@@ -150,6 +150,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       idempotentHint: false,
       openWorldHint: true,
     });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_drop_foreign_key')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
     assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_modify_column')?.annotations, {
       readOnlyHint: false,
       destructiveHint: true,
@@ -182,6 +188,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
             name !== 'drop_index' &&
             name !== 'alter_table_add_column' &&
             name !== 'alter_table_add_foreign_key' &&
+            name !== 'alter_table_drop_foreign_key' &&
             name !== 'alter_table_modify_column' &&
             name !== 'alter_table_rename_column' &&
             name !== 'rename_table',
