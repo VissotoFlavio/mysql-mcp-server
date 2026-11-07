@@ -123,11 +123,19 @@ npm run test:integration
 
 The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
 
+The rename integration contract is a separate owner in [`test/integration/rename-table.integration.test.ts`](../test/integration/rename-table.integration.test.ts). It derives a source ending in `_rt` and a destination ending in `_rt_r` from `MYSQL_DDL_INTEGRATION_TABLE`, first verifies both names are absent, then creates, renames, describes, and cleans up only those names. It runs under the same opt-in and isolated-schema guard, and is included by `npm run test:integration`; never point either DDL fixture at shared or production data.
+
 ### Controlled foreign-key creation
 
 `alter_table_add_foreign_key` is advertised only with `MYSQL_DDL_ENABLED=true`. Before calling it, discover both base tables and explicitly confirm `{ schema, table, constraint, columns, referencedTable, referencedColumns, onDelete, onUpdate, reason }` with the operator. The tool accepts one intra-schema foreign key with 1–16 distinct ordered column pairs. Both actions are mandatory and restricted to `RESTRICT` or `NO ACTION`; it never infers `CASCADE`, creates indexes, accepts expressions or SQL, or references another schema.
 
 The preflight verifies both base tables use InnoDB, the constraint is new, pairs are compatible, ordered supporting indexes already exist, and no orphan rows exist. It returns no values or raw metadata. A dedicated account needs only metadata/data-preflight `SELECT`, `ALTER` on the child table, and `REFERENCES` on the parent table for this operation. The operation can acquire metadata locks and concurrent writes or DDL can invalidate a successful preflight, so run it only after explicit confirmation and during an appropriate maintenance window. On `MYSQL_DDL_OUTCOME_UNKNOWN`, use metadata to verify whether the named constraint exists before seeking a new operator decision; never retry automatically.
+
+### Controlled table rename
+
+`rename_table` is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit operator confirmation for exactly `{ schema, table, newTable, reason }`. It accepts one unquoted source and destination identifier in the same schema, requires the source to be a `BASE TABLE`, requires the destination to be absent, and emits only the internally generated `RENAME TABLE` form.
+
+MySQL requires `ALTER` and `DROP` on the source plus `CREATE` and `INSERT` on the destination; metadata preflight needs `SELECT` on `information_schema`. Review application code, jobs, views, reports, integrations, foreign-key dependencies, and table-specific permissions before the change. MySQL can update foreign-key references and internally generated constraint names, but grants specific to the old table name do not migrate. Verify that the source is absent and the destination is present with `describe_table` after success. Permission, metadata, lock/deadlock, and indeterminate outcomes are sanitized; never auto-retry an indeterminate result.
 
 ### Controlled column rename
 

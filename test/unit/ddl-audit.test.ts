@@ -78,6 +78,21 @@ test('audits an ALTER TABLE ADD FOREIGN KEY request without recording referenced
   assert.doesNotMatch(lines.join('\n'), /ALTER TABLE|FOREIGN KEY|customers|customer_id|orders_customer_fk/iu);
 });
 
+test('audits RENAME TABLE with sanitized source and destination metadata', () => {
+  const lines: string[] = [];
+  const attempt = createDdlAuditAttempt(
+    { schema: 'app', table: 'accounts', newTable: 'customers', reason: 'Rename the account table.' },
+    { writer: (line) => lines.push(line), operationId: () => 'rename-table-op', now: () => 1_000 },
+  );
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'rename_table');
+  assert.deepEqual(completed.target, { schema: 'app', table: 'accounts', newTable: 'customers' });
+  assert.equal(completed.columnCount, null);
+  assert.equal(completed.primaryKeyColumnCount, null);
+  assert.doesNotMatch(lines.join('\n'), /RENAME TABLE/iu);
+});
+
 test('hashes normalized CREATE TABLE requests and emits only sanitized structural audit data', () => {
   const first = request();
   const equivalent = {
@@ -110,6 +125,7 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new DdlPolicyError(), false, 'MYSQL_DDL_INVALID_ARGUMENT', undefined],
     [new DdlDisabledError(), false, 'MYSQL_DDL_DISABLED', undefined],
     [new DdlDriverError('ER_TABLE_EXISTS_ERROR', true), true, 'MYSQL_DDL_TABLE_EXISTS', undefined],
+    [new DdlDriverError('ER_NO_SUCH_TABLE', true), true, 'MYSQL_DDL_TABLE_INVALID', undefined],
     [new DdlDriverError('ER_DUP_KEYNAME', true), true, 'MYSQL_DDL_INDEX_EXISTS', undefined],
     [new DdlDriverError('ER_DUP_FIELDNAME', true), true, 'MYSQL_DDL_COLUMN_EXISTS', undefined],
     [new DdlDriverError('ER_ACCESS_DENIED_ERROR', true), true, 'MYSQL_DDL_PERMISSION_DENIED', undefined],
@@ -119,7 +135,7 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new DdlDriverError('ER_LOCK_DEADLOCK', true), true, 'MYSQL_DDL_DEADLOCK', undefined],
     [new DdlDriverError('1049', true), true, 'MYSQL_DDL_FAILED', undefined],
     [new DdlDriverError(undefined, true), true, 'MYSQL_DDL_FAILED', undefined],
-    [new DdlResultError(), true, 'MYSQL_DDL_FAILED', undefined],
+    [new DdlResultError(), true, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
     [new QueryTimeoutError(true), true, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
     [new ConnectionError('raw transport secret', true), true, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
     [new ConnectionError('connection failed before submission'), false, 'MYSQL_DDL_FAILED', undefined],

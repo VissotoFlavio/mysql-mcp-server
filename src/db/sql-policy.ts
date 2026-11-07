@@ -368,6 +368,23 @@ export function assertAlterTableRenameColumnSql(sql: string): void {
   if (oldName === newName || afterNewName !== sql.length) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical, intra-schema one-table RENAME TABLE grammar. */
+export function assertRenameTableSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'RENAME TABLE ');
+  const [schema, afterSchema] = readIdentifier(sql, index);
+  index = readExpected(sql, afterSchema, '.');
+  const [oldTable, afterOldTable] = readIdentifier(sql, index);
+  index = afterOldTable;
+  index = readExpected(sql, index, ' TO ');
+  const [newSchema, afterNewSchema] = readIdentifier(sql, index);
+  if (schema !== newSchema) failDdlPolicy();
+  index = readExpected(sql, afterNewSchema, '.');
+  const [newTable, afterNewTable] = readIdentifier(sql, index);
+  if (afterNewTable !== sql.length || newTable.length === 0 || oldTable.toLocaleLowerCase('en-US') === newTable.toLocaleLowerCase('en-US'))
+    failDdlPolicy();
+}
+
 /** Defense in depth for the canonical, intra-schema ADD CONSTRAINT FOREIGN KEY grammar. */
 export function assertAlterTableAddForeignKeySql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();

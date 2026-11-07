@@ -107,7 +107,8 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
           name === 'create_unique_index' ||
           name === 'alter_table_add_column' ||
           name === 'alter_table_add_foreign_key' ||
-          name === 'alter_table_rename_column',
+          name === 'alter_table_rename_column' ||
+          name === 'rename_table',
       ),
       false,
     );
@@ -147,6 +148,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       idempotentHint: false,
       openWorldHint: true,
     });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'rename_table')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
     assert.equal(
       enabledTools.some(({ name }) => name === 'insert_rows'),
       false,
@@ -160,7 +167,8 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
             name !== 'create_unique_index' &&
             name !== 'alter_table_add_column' &&
             name !== 'alter_table_add_foreign_key' &&
-            name !== 'alter_table_rename_column',
+            name !== 'alter_table_rename_column' &&
+            name !== 'rename_table',
         )
         .map(({ name }) => name)
         .sort(),
@@ -453,6 +461,107 @@ test('returns sanitized invalid, permission, existing-table, and indeterminate o
       assert.equal(calls, code === 'MYSQL_DDL_INVALID_ARGUMENT' ? 0 : 1);
     } finally {
       await client.close();
+    }
+  }
+});
+
+test('executes rename_table through the MCP handler and sanitizes execution outcomes', async () => {
+  const metadata = [{ schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE' }];
+  let calls = 0;
+  let options: unknown;
+  const application = createApplication(
+    async (received) => {
+      calls += 1;
+      options = received;
+      return [{ affectedRows: 0, warningStatus: 1 }, []];
+    },
+    true,
+    async () => [metadata, []],
+  );
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'rename_table',
+      arguments: { schema: 'app', table: 'accounts', newTable: 'customers', reason: 'Consolidate account naming.' },
+    });
+    const result = JSON.parse(toolText(response)) as Record<string, unknown>;
+    assert.equal(response.result?.isError, undefined);
+    assert.deepEqual(result, {
+      operation: 'rename_table',
+      operationId: result.operationId,
+      target: { schema: 'app', table: 'accounts', newTable: 'customers' },
+      warnings: 1,
+    });
+    assert.equal(calls, 1);
+    assert.deepEqual(options, { sql: 'RENAME TABLE `app`.`accounts` TO `app`.`customers`', timeout: 30_000 });
+  } finally {
+    await client.close();
+  }
+
+  for (const [failure, code, retryAdvice] of [
+    [Object.assign(new Error('permission rename-secret'), { code: 'ER_TABLEACCESS_DENIED_ERROR' }), 'MYSQL_DDL_PERMISSION_DENIED', undefined],
+    [Object.assign(new Error('lock rename-secret'), { code: 'ER_LOCK_WAIT_TIMEOUT' }), 'MYSQL_DDL_LOCK_TIMEOUT', undefined],
+    [Object.assign(new Error('deadlock rename-secret'), { code: 'ER_LOCK_DEADLOCK' }), 'MYSQL_DDL_DEADLOCK', undefined],
+    [Object.assign(new Error('transport rename-secret'), { code: 'ECONNRESET' }), 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
+  ] as const) {
+    let failureCalls = 0;
+    const failingApplication = createApplication(
+      async () => {
+        failureCalls += 1;
+        throw failure;
+      },
+      true,
+      async () => [metadata, []],
+    );
+    const failingClient = await connect(failingApplication);
+    try {
+      const response = await failingClient.request('tools/call', {
+        name: 'rename_table',
+        arguments: { schema: 'app', table: 'accounts', newTable: 'customers', reason: 'Consolidate account naming.' },
+      });
+      const structured = response.result?.structuredContent as { code: string; retryAdvice?: string };
+      assert.equal(response.result?.isError, true);
+      assert.equal(structured.code, code);
+      assert.equal(structured.retryAdvice, retryAdvice);
+      assert.equal(failureCalls, 1);
+      assert.doesNotMatch(JSON.stringify(response), /rename-secret|RENAME TABLE/);
+    } finally {
+      await failingClient.close();
+    }
+  }
+
+  for (const [preflightRows, code] of [
+    [[], 'MYSQL_DDL_TABLE_INVALID'],
+    [[{ schemaName: 'app', tableName: 'accounts', tableType: 'VIEW' }], 'MYSQL_DDL_TABLE_INVALID'],
+    [
+      [
+        { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE' },
+        { schemaName: 'app', tableName: 'customers', tableType: 'BASE TABLE' },
+      ],
+      'MYSQL_DDL_TABLE_EXISTS',
+    ],
+  ] as const) {
+    let preflightCalls = 0;
+    const preflightApplication = createApplication(
+      async () => {
+        preflightCalls += 1;
+        return [{ affectedRows: 0, warningStatus: 0 }, []];
+      },
+      true,
+      async () => [preflightRows, []],
+    );
+    const preflightClient = await connect(preflightApplication);
+    try {
+      const response = await preflightClient.request('tools/call', {
+        name: 'rename_table',
+        arguments: { schema: 'app', table: 'accounts', newTable: 'customers', reason: 'Consolidate account naming.' },
+      });
+      assert.equal(response.result?.isError, true);
+      assert.equal((response.result?.structuredContent as { code: string }).code, code);
+      assert.equal(preflightCalls, 0);
+      assert.doesNotMatch(JSON.stringify(response), /RENAME TABLE|BASE TABLE/);
+    } finally {
+      await preflightClient.close();
     }
   }
 });

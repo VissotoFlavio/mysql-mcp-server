@@ -111,6 +111,15 @@ const VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_RENAME_TABLE_METADATA_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = ?
+    AND TABLE_NAME IN (?, ?)
+  ORDER BY TABLE_NAME ASC
+  LIMIT 3
+`;
+
 const VALIDATE_ALTER_TABLE_FOREIGN_KEY_TABLE_SQL = `
   SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType, ENGINE AS engine
   FROM information_schema.TABLES
@@ -348,6 +357,16 @@ export class AlterTableRenameColumnMetadataError extends Error {
     this.name = 'AlterTableRenameColumnMetadataError';
   }
 }
+export type RenameTableMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_TABLE_EXISTS';
+export class RenameTableMetadataError extends Error {
+  constructor(
+    readonly code: RenameTableMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RenameTableMetadataError';
+  }
+}
 export type AlterTableAddForeignKeyMetadataCode =
   | 'MYSQL_DDL_METADATA_INVALID'
   | 'MYSQL_DDL_TABLE_INVALID'
@@ -381,6 +400,9 @@ const ALTER_TABLE_RENAME_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the r
 const ALTER_TABLE_RENAME_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE RENAME COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID = 'The source column is unknown or inaccessible.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_EXISTS = 'The destination column already exists.';
+const RENAME_TABLE_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
+const RENAME_TABLE_METADATA_SOURCE_INVALID = 'The source must be an existing base table.';
+const RENAME_TABLE_METADATA_DESTINATION_EXISTS = 'The destination table already exists.';
 const ALTER_TABLE_FOREIGN_KEY_METADATA_UNAVAILABLE = 'Unable to validate the requested foreign-key metadata.';
 const ALTER_TABLE_FOREIGN_KEY_TABLE_INVALID = 'Foreign keys are supported only between InnoDB base tables.';
 const ALTER_TABLE_FOREIGN_KEY_COLUMN_INVALID = 'One or more foreign-key columns are unknown, incompatible, or lack a required index.';
@@ -848,6 +870,39 @@ export async function validateAlterTableRenameColumnMetadata(
     throw new AlterTableRenameColumnMetadataError('MYSQL_DDL_COLUMN_INVALID', ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID);
   if (names.has(normalizedIdentifierName(newColumn)))
     throw new AlterTableRenameColumnMetadataError('MYSQL_DDL_COLUMN_EXISTS', ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_EXISTS);
+}
+
+/** @internal Reads bounded table metadata before one intra-schema RENAME TABLE attempt. */
+export async function validateRenameTableMetadata(mysql: ConnectionLayer, schema: string, table: string, newTable: string): Promise<void> {
+  let rows: TableRow[];
+  try {
+    [rows] = await mysql.query<TableRow[]>(queryOptions(mysql, VALIDATE_RENAME_TABLE_METADATA_SQL), [schema, table, newTable]);
+  } catch {
+    throw new RenameTableMetadataError('MYSQL_DDL_METADATA_INVALID', RENAME_TABLE_METADATA_UNAVAILABLE);
+  }
+  if (!Array.isArray(rows) || rows.length > 2) throw new RenameTableMetadataError('MYSQL_DDL_METADATA_INVALID', RENAME_TABLE_METADATA_UNAVAILABLE);
+
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.tableType) ||
+      normalizedIdentifierName(row.schemaName) !== normalizedIdentifierName(schema) ||
+      ![table, newTable].some((name) => normalizedIdentifierName(name) === normalizedIdentifierName(row.tableName)) ||
+      seen.has(normalizedIdentifierName(row.tableName))
+    )
+      throw new RenameTableMetadataError('MYSQL_DDL_METADATA_INVALID', RENAME_TABLE_METADATA_UNAVAILABLE);
+    seen.add(normalizedIdentifierName(row.tableName));
+  }
+
+  const source = rows.find(({ tableName }) => normalizedIdentifierName(tableName) === normalizedIdentifierName(table));
+  const destination = rows.find(({ tableName }) => normalizedIdentifierName(tableName) === normalizedIdentifierName(newTable));
+  if (source === undefined || source.tableType !== 'BASE TABLE')
+    throw new RenameTableMetadataError('MYSQL_DDL_TABLE_INVALID', RENAME_TABLE_METADATA_SOURCE_INVALID);
+  if (destination !== undefined) throw new RenameTableMetadataError('MYSQL_DDL_TABLE_EXISTS', RENAME_TABLE_METADATA_DESTINATION_EXISTS);
 }
 
 function foreignKeyError(code: AlterTableAddForeignKeyMetadataCode): AlterTableAddForeignKeyMetadataError {

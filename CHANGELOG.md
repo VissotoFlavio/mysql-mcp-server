@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - 2026-11-06
+
+- [#73 — ddl: expose controlled rename_table MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/73)
 
 ## 0.8.0 - 2026-11-06
 

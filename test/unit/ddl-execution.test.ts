@@ -7,10 +7,11 @@ import {
   createCreateIndexStatement,
   createCreateTableStatement,
   createCreateUniqueIndexStatement,
+  createRenameTableStatement,
   DdlDisabledError,
   type ConnectionLayer,
 } from '../../src/db/pool.js';
-import { DdlPolicyError, assertCreateTableSql } from '../../src/db/sql-policy.js';
+import { DdlPolicyError, assertCreateTableSql, assertRenameTableSql } from '../../src/db/sql-policy.js';
 
 import { validEnvironment } from './fixtures.js';
 
@@ -42,6 +43,14 @@ const createAccountsUniqueIndexStatement = () =>
     index: 'accounts_name_uq',
     columns: ['name'],
     reason: 'Prevent duplicate account names.',
+  });
+
+const renameAccountsStatement = () =>
+  createRenameTableStatement({
+    schema: 'app',
+    table: 'accounts',
+    newTable: 'customers',
+    reason: 'Rename the account table.',
   });
 
 test('executes CREATE INDEX only through its matching capability and audits the index target', async () => {
@@ -144,6 +153,73 @@ test('executes only a capability-minted canonical CREATE TABLE and returns narro
     sql: 'CREATE TABLE `app`.`accounts` (`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, `name` VARCHAR(255) NOT NULL, PRIMARY KEY (`id`))',
     timeout: 30_000,
   });
+  await layer.close();
+});
+
+test('executes only a capability-minted canonical same-schema RENAME TABLE and audits the target', async () => {
+  let executeCalls = 0;
+  let options: unknown;
+  const auditLines: string[] = [];
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    ddlAuditWriter: (line) => auditLines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute(receivedOptions: unknown) {
+            executeCalls += 1;
+            options = receivedOptions;
+            return [{ affectedRows: 0, warningStatus: 1, secret: 'must not escape' }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const statement = renameAccountsStatement();
+
+  assert.doesNotThrow(() => assertRenameTableSql('RENAME TABLE `app`.`accounts` TO `app`.`customers`'));
+  assert.deepEqual(Object.keys(statement), []);
+  assert.deepEqual(await layer.ddl.executeRenameTable(statement), { warningStatus: 1 });
+  await assert.rejects(() => layer.ddl.executeCreateTable(statement as never), DdlPolicyError);
+  assert.equal(executeCalls, 1);
+  assert.deepEqual(options, { sql: 'RENAME TABLE `app`.`accounts` TO `app`.`customers`', timeout: 30_000 });
+  const [started, completed] = auditLines.map((line) => JSON.parse(line));
+  assert.equal(started.operation, 'rename_table');
+  assert.deepEqual(completed.target, { schema: 'app', table: 'accounts', newTable: 'customers' });
+  assert.equal(completed.result, 'succeeded');
+  assert.doesNotMatch(auditLines.join('\n'), /RENAME TABLE|must not escape/);
+  await layer.close();
+});
+
+test('classifies a malformed post-submission RENAME TABLE result as indeterminate', async () => {
+  const auditLines: string[] = [];
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    ddlAuditWriter: (line) => auditLines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute() {
+            return [{ affectedRows: 1, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+
+  await assert.rejects(() => layer.ddl.executeRenameTable(renameAccountsStatement()));
+  const [, completed] = auditLines.map((line) => JSON.parse(line));
+  assert.equal(completed.result, 'indeterminate');
+  assert.equal(completed.code, 'MYSQL_DDL_OUTCOME_UNKNOWN');
+  assert.equal(completed.retryAdvice, 'VERIFY_STATE_BEFORE_RETRYING');
   await layer.close();
 });
 
