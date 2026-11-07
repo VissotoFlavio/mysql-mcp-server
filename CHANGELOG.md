@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - 2026-11-06
 
 - [#75 — ddl: expose controlled drop_index MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/75)
 
