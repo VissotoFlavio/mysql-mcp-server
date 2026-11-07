@@ -107,6 +107,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
           name === 'create_unique_index' ||
           name === 'alter_table_add_column' ||
           name === 'alter_table_add_foreign_key' ||
+          name === 'alter_table_modify_column' ||
           name === 'alter_table_rename_column' ||
           name === 'rename_table',
       ),
@@ -142,6 +143,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       idempotentHint: false,
       openWorldHint: true,
     });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_modify_column')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
     assert.deepEqual(enabledTools.find(({ name }) => name === 'alter_table_rename_column')?.annotations, {
       readOnlyHint: false,
       destructiveHint: true,
@@ -167,6 +174,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
             name !== 'create_unique_index' &&
             name !== 'alter_table_add_column' &&
             name !== 'alter_table_add_foreign_key' &&
+            name !== 'alter_table_modify_column' &&
             name !== 'alter_table_rename_column' &&
             name !== 'rename_table',
         )
@@ -221,6 +229,183 @@ test('executes and sanitizes rename-column DDL outcomes without retrying', async
     assert.equal((response.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
   } finally {
     await metadataFailure.close();
+  }
+});
+
+test('preflights and executes one widening-only modify-column statement', async () => {
+  let executeCalls = 0;
+  let metadataCalls = 0;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query(options: { sql: string }) {
+            if (options.sql.includes('STATISTICS'))
+              return [
+                [{ indexName: 'PRIMARY', sequenceInIndex: 1, columnName: 'account_id', subPart: null, expression: null, indexType: 'BTREE' }],
+                [],
+              ];
+            if (options.sql.includes('KEY_COLUMN_USAGE')) return [[], []];
+            if (options.sql.includes('CHECK_CONSTRAINTS')) return [[], []];
+            metadataCalls += 1;
+            return [
+              [
+                {
+                  schemaName: 'app',
+                  tableName: 'accounts',
+                  tableType: 'BASE TABLE',
+                  columnName: 'account_id',
+                  ordinalPosition: 1,
+                  columnType: metadataCalls > 1 ? 'bigint unsigned' : 'int unsigned',
+                  characterSetName: null,
+                  collationName: null,
+                  isNullable: 'NO',
+                  columnDefault: null,
+                  extra: '',
+                },
+              ],
+              [],
+            ];
+          },
+          async execute(options: { sql: string }) {
+            executeCalls += 1;
+            assert.equal(options.sql, 'ALTER TABLE `app`.`accounts` MODIFY COLUMN `account_id` BIGINT UNSIGNED NOT NULL');
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'alter_table_modify_column',
+      arguments: {
+        schema: 'app',
+        table: 'accounts',
+        column: 'account_id',
+        definition: { name: 'account_id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false },
+        reason: 'Widen the account identifier.',
+      },
+    });
+    assert.equal(response.result?.isError, undefined);
+    assert.equal((response.result?.structuredContent as { operation: string }).operation, 'alter_table_modify_column');
+    assert.equal(executeCalls, 1);
+    assert.doesNotMatch(JSON.stringify(response), /ALTER TABLE|BIGINT/);
+  } finally {
+    await client.close();
+  }
+});
+
+test('returns a sanitized modify-column metadata failure without execution', async () => {
+  let executeCalls = 0;
+  const application = createApplication(
+    async () => {
+      executeCalls += 1;
+      return [{ affectedRows: 0, warningStatus: 0 }, []];
+    },
+    true,
+    async () => [[], []],
+  );
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'alter_table_modify_column',
+      arguments: {
+        schema: 'app',
+        table: 'accounts',
+        column: 'account_id',
+        definition: { name: 'account_id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false },
+        reason: 'Widen the account identifier.',
+      },
+    });
+    assert.equal(response.result?.isError, true);
+    assert.deepEqual(response.result?.structuredContent, {
+      code: 'MYSQL_DDL_METADATA_INVALID',
+      message: 'Unable to validate the requested table metadata.',
+    });
+    assert.equal(executeCalls, 0);
+    assert.doesNotMatch(JSON.stringify(response), /ALTER TABLE|BIGINT|secret/);
+  } finally {
+    await client.close();
+  }
+});
+
+test('marks a post-execution metadata mismatch as indeterminate in the audit', async () => {
+  let executeCalls = 0;
+  let metadataCalls = 0;
+  const auditLines: string[] = [];
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    ddlAuditWriter: (line) => auditLines.push(line),
+    driver: {
+      createPool() {
+        return {
+          async query(options: { sql: string }) {
+            if (options.sql.includes('STATISTICS'))
+              return [
+                [{ indexName: 'PRIMARY', sequenceInIndex: 1, columnName: 'account_id', subPart: null, expression: null, indexType: 'BTREE' }],
+                [],
+              ];
+            if (options.sql.includes('KEY_COLUMN_USAGE') || options.sql.includes('CHECK_CONSTRAINTS')) return [[], []];
+            metadataCalls += 1;
+            return [
+              [
+                {
+                  schemaName: 'app',
+                  tableName: 'accounts',
+                  tableType: 'BASE TABLE',
+                  columnName: 'account_id',
+                  ordinalPosition: 1,
+                  columnType: 'int unsigned',
+                  characterSetName: null,
+                  collationName: null,
+                  isNullable: 'NO',
+                  columnDefault: null,
+                  extra: '',
+                },
+              ],
+              [],
+            ];
+          },
+          async execute() {
+            executeCalls += 1;
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const client = await connect(application);
+  try {
+    const response = await client.request('tools/call', {
+      name: 'alter_table_modify_column',
+      arguments: {
+        schema: 'app',
+        table: 'accounts',
+        column: 'account_id',
+        definition: { name: 'account_id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false },
+        reason: 'Widen the account identifier.',
+      },
+    });
+    assert.equal(response.result?.isError, true);
+    assert.deepEqual(response.result?.structuredContent, {
+      result: 'indeterminate',
+      code: 'MYSQL_DDL_OUTCOME_UNKNOWN',
+      message: 'The DDL outcome is unknown; verify state before retrying.',
+      retryAdvice: 'VERIFY_STATE_BEFORE_RETRYING',
+    });
+    assert.equal(metadataCalls, 2);
+    assert.equal(executeCalls, 1);
+    const completed = auditLines.map((line) => JSON.parse(line)).at(-1);
+    assert.equal(completed.result, 'indeterminate');
+    assert.equal(completed.code, 'MYSQL_DDL_OUTCOME_UNKNOWN');
+    assert.doesNotMatch(auditLines.join('\n'), /ALTER TABLE|BIGINT/);
+  } finally {
+    await client.close();
   }
 });
 

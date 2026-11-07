@@ -11,6 +11,11 @@ import {
   type AlterTableAddForeignKeyInput,
 } from '../tools/alter-table-add-foreign-key-input.js';
 import {
+  AlterTableModifyColumnInputValidationError,
+  normalizeAlterTableModifyColumnInput,
+  type AlterTableModifyColumnInput,
+} from '../tools/alter-table-modify-column-input.js';
+import {
   AlterTableRenameColumnInputValidationError,
   normalizeAlterTableRenameColumnInput,
   type AlterTableRenameColumnInput,
@@ -21,7 +26,7 @@ import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '..
 import { RenameTableInputValidationError, normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 import { classifyDdlDriverCode } from './ddl-error-codes.js';
-import { RenameTableMetadataError } from './metadata.js';
+import { AlterTableModifyColumnMetadataError, AlterTableModifyColumnVerificationError, RenameTableMetadataError } from './metadata.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
 
@@ -32,6 +37,7 @@ export type DdlAuditOperation =
   | 'create_unique_index'
   | 'alter_table_add_column'
   | 'alter_table_add_foreign_key'
+  | 'alter_table_modify_column'
   | 'alter_table_rename_column'
   | 'rename_table'
   | 'invalid';
@@ -61,7 +67,7 @@ export interface DdlAuditEvent {
   readonly timestamp: string;
   readonly operationId: string;
   readonly operation: DdlAuditOperation;
-  readonly target: Readonly<{ schema: string; table: string; index?: string; newTable?: string }>;
+  readonly target: Readonly<{ schema: string; table: string; index?: string; column?: string; newColumn?: string; newTable?: string }>;
   readonly reason: string;
   readonly columnCount: number | null;
   readonly primaryKeyColumnCount: number | null;
@@ -94,6 +100,7 @@ type NormalizedRequest = Readonly<{
     | CreateUniqueIndexInput
     | AlterTableAddColumnInput
     | AlterTableAddForeignKeyInput
+    | AlterTableModifyColumnInput
     | AlterTableRenameColumnInput
     | RenameTableInput
     | null;
@@ -157,6 +164,13 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
       return INVALID_REQUEST;
     }
   }
+  if (expectedOperation === 'alter_table_modify_column') {
+    try {
+      return Object.freeze({ operation: 'alter_table_modify_column', input: normalizeAlterTableModifyColumnInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
   try {
     return Object.freeze({ operation: 'create_table', input: normalizeCreateTableInput(request) });
   } catch {
@@ -179,6 +193,11 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   }
   try {
     return Object.freeze({ operation: 'alter_table_add_foreign_key', input: normalizeAlterTableAddForeignKeyInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'alter_table_modify_column', input: normalizeAlterTableModifyColumnInput(request) });
   } catch {
     /* try the other supported DDL contract */
   }
@@ -215,13 +234,18 @@ function canonicalRequest(request: NormalizedRequest): object {
                 onDelete: (input as AlterTableAddForeignKeyInput).onDelete,
                 onUpdate: (input as AlterTableAddForeignKeyInput).onUpdate,
               }
-            : {
-                columns: inputWithColumns.columns.map((column) =>
-                  typeof column === 'string'
-                    ? column
-                    : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-                ),
-              }),
+            : request.operation === 'alter_table_modify_column'
+              ? {
+                  column: (input as AlterTableModifyColumnInput).column,
+                  definition: (input as AlterTableModifyColumnInput).definition,
+                }
+              : {
+                  columns: inputWithColumns.columns.map((column) =>
+                    typeof column === 'string'
+                      ? column
+                      : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+                  ),
+                }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -239,6 +263,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, CreateIndexInputValidationError) ||
       safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
       safeInstanceOf(error, AlterTableAddForeignKeyInputValidationError) ||
+      safeInstanceOf(error, AlterTableModifyColumnInputValidationError) ||
       safeInstanceOf(error, AlterTableRenameColumnInputValidationError) ||
       safeInstanceOf(error, RenameTableInputValidationError) ||
       safeInstanceOf(error, DdlPolicyError) ||
@@ -246,6 +271,15 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     )
       return OUTCOMES.invalid;
     if (safeInstanceOf(error, DdlDisabledError)) return OUTCOMES.disabled;
+    if (safeInstanceOf(error, AlterTableModifyColumnVerificationError)) return OUTCOMES.unknown;
+    if (safeInstanceOf(error, AlterTableModifyColumnMetadataError)) {
+      const code = (error as AlterTableModifyColumnMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : OUTCOMES.structure;
+    }
     if (safeInstanceOf(error, RenameTableMetadataError)) {
       const code = (error as RenameTableMetadataError).code;
       return code === 'MYSQL_DDL_METADATA_INVALID'
@@ -309,7 +343,9 @@ function baseEvent(
               ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput | CreateUniqueIndexInput).index }
               : normalized.operation === 'rename_table'
                 ? { schema: input.schema, table: input.table, newTable: (input as RenameTableInput).newTable }
-                : { schema: input.schema, table: input.table },
+                : normalized.operation === 'alter_table_modify_column'
+                  ? { schema: input.schema, table: input.table, column: (input as AlterTableModifyColumnInput).column }
+                  : { schema: input.schema, table: input.table },
           ),
     reason: input?.reason ?? '[invalid]',
     columnCount:
@@ -319,9 +355,11 @@ function baseEvent(
           ? 1
           : normalized.operation === 'alter_table_rename_column'
             ? 1
-            : normalized.operation === 'rename_table'
-              ? null
-              : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
+            : normalized.operation === 'alter_table_modify_column'
+              ? 1
+              : normalized.operation === 'rename_table'
+                ? null
+                : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };
