@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildAlterTableAddColumnStatement,
   buildAlterTableAddForeignKeyStatement,
+  buildAlterTableModifyColumnStatement,
   buildAlterTableRenameColumnStatement,
   buildCreateIndexStatement,
   buildCreateTableStatement,
@@ -12,12 +13,14 @@ import {
 import {
   assertAlterTableAddColumnSql,
   assertAlterTableAddForeignKeySql,
+  assertAlterTableModifyColumnSql,
   assertAlterTableRenameColumnSql,
   assertCreateIndexSql,
   assertCreateTableSql,
   assertCreateUniqueIndexSql,
 } from '../../src/db/sql-policy.js';
 import { normalizeAlterTableAddColumnInput } from '../../src/tools/alter-table-add-column-input.js';
+import { normalizeAlterTableModifyColumnInput } from '../../src/tools/alter-table-modify-column-input.js';
 import { normalizeCreateIndexInput } from '../../src/tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH, normalizeCreateTableInput } from '../../src/tools/create-table-input.js';
 
@@ -95,6 +98,49 @@ test('renders only a canonical ALTER TABLE RENAME COLUMN statement', () => {
     'ALTER TABLE `app`.`accounts` RENAME COLUMN `nickname` TO `display_name`, RENAME COLUMN `email` TO `address`',
   ])
     assert.throws(() => assertAlterTableRenameColumnSql(sql));
+});
+
+test('renders only a canonical ALTER TABLE MODIFY COLUMN statement', () => {
+  const statement = buildAlterTableModifyColumnStatement(
+    normalizeAlterTableModifyColumnInput({
+      schema: 'app',
+      table: 'accounts',
+      column: 'account_id',
+      definition: { name: 'account_id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false },
+      reason: 'Widen the account identifier.',
+    }),
+  );
+  assert.equal(statement.sql, 'ALTER TABLE `app`.`accounts` MODIFY COLUMN `account_id` BIGINT UNSIGNED NOT NULL');
+  assert.doesNotThrow(() => assertAlterTableModifyColumnSql(statement.sql));
+  for (const sql of [
+    'ALTER TABLE `app`.`accounts` MODIFY COLUMN `account_id` BIGINT UNSIGNED NULL DEFAULT 0',
+    'ALTER TABLE `app`.`accounts` MODIFY COLUMN `account_id` BIGINT UNSIGNED NOT NULL AFTER `other`',
+    'ALTER TABLE `app`.`accounts` MODIFY COLUMN `account_id` BIGINT UNSIGNED NOT NULL, MODIFY COLUMN `name` TEXT NULL',
+  ])
+    assert.throws(() => assertAlterTableModifyColumnSql(sql));
+});
+
+test('preserves a structured text column character set and collation', () => {
+  const statement = buildAlterTableModifyColumnStatement(
+    normalizeAlterTableModifyColumnInput({
+      schema: 'app',
+      table: 'accounts',
+      column: 'display_name',
+      definition: {
+        name: 'display_name',
+        type: { kind: 'varchar', length: 200 },
+        nullable: false,
+        characterSet: 'utf8mb4',
+        collation: 'utf8mb4_bin',
+      },
+      reason: 'Widen the display name without changing comparison semantics.',
+    }),
+  );
+  assert.equal(
+    statement.sql,
+    'ALTER TABLE `app`.`accounts` MODIFY COLUMN `display_name` VARCHAR(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL',
+  );
+  assert.doesNotThrow(() => assertAlterTableModifyColumnSql(statement.sql));
 });
 
 test('renders only a canonical intra-schema ALTER TABLE ADD CONSTRAINT FOREIGN KEY statement', () => {

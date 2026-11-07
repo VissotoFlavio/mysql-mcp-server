@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { createDdlAuditAttempt, createDdlRequestHash, toSafeDdlOutcome } from '../../src/db/ddl-audit.js';
 import { classifyDdlDriverCode, sanitizeDdlDriverCode } from '../../src/db/ddl-error-codes.js';
+import { AlterTableModifyColumnMetadataError, AlterTableModifyColumnVerificationError } from '../../src/db/metadata.js';
 import { ConnectionError, createConnectionLayer, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from '../../src/db/pool.js';
 import { DdlPolicyError } from '../../src/db/sql-policy.js';
 
@@ -139,6 +140,10 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new QueryTimeoutError(true), true, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
     [new ConnectionError('raw transport secret', true), true, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
     [new ConnectionError('connection failed before submission'), false, 'MYSQL_DDL_FAILED', undefined],
+    [new AlterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID', 'internal'), false, 'MYSQL_DDL_METADATA_INVALID', undefined],
+    [new AlterTableModifyColumnMetadataError('MYSQL_DDL_TABLE_INVALID', 'internal'), false, 'MYSQL_DDL_TABLE_INVALID', undefined],
+    [new AlterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID', 'internal'), false, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
+    [new AlterTableModifyColumnVerificationError(), false, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
   ];
   for (const [error, submitted, code, retryAdvice] of cases) {
     const outcome = toSafeDdlOutcome(error, submitted);
