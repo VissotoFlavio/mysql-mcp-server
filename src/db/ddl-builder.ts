@@ -1,5 +1,6 @@
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeAlterTableAddForeignKeyInput, type AlterTableAddForeignKeyInput } from '../tools/alter-table-add-foreign-key-input.js';
+import { normalizeAlterTableModifyColumnInput, type AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput } from '../tools/alter-table-rename-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
@@ -19,6 +20,9 @@ export interface BuiltAlterTableAddColumnStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableAddForeignKeyStatement {
+  readonly sql: string;
+}
+export interface BuiltAlterTableModifyColumnStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableRenameColumnStatement {
@@ -60,6 +64,17 @@ function renderColumn(column: CreateTableColumn): string {
   return `${escapeIdentifier(column.name)} ${renderColumnType(column.type)} ${column.nullable ? 'NULL' : 'NOT NULL'}${
     column.autoIncrement === true ? ' AUTO_INCREMENT' : ''
   }`;
+}
+
+function renderAlterTableModifyColumn(column: AlterTableModifyColumnInput['definition']): string {
+  let definition = `${escapeIdentifier(column.name)} ${renderColumnType(column.type)}`;
+  if (column.characterSet === undefined && column.collation === undefined) {
+    definition += ` ${column.nullable ? 'NULL' : 'NOT NULL'}${column.autoIncrement === true ? ' AUTO_INCREMENT' : ''}`;
+    return definition;
+  }
+  if (column.characterSet === undefined || column.collation === undefined) throw new Error('Character set and collation must be provided together.');
+  definition += ` CHARACTER SET ${column.characterSet} COLLATE ${column.collation}`;
+  return `${definition} ${column.nullable ? 'NULL' : 'NOT NULL'}${column.autoIncrement === true ? ' AUTO_INCREMENT' : ''}`;
 }
 
 /**
@@ -104,6 +119,14 @@ export function buildAlterTableAddForeignKeyStatement(input: AlterTableAddForeig
   const normalized = normalizeAlterTableAddForeignKeyInput(input);
   return Object.freeze({
     sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} ADD CONSTRAINT ${escapeIdentifier(normalized.constraint)} FOREIGN KEY (${normalized.columns.map(escapeIdentifier).join(', ')}) REFERENCES ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.referencedTable)} (${normalized.referencedColumns.map(escapeIdentifier).join(', ')}) ON DELETE ${normalized.onDelete} ON UPDATE ${normalized.onUpdate}`,
+  });
+}
+
+/** Produces the canonical one-column MODIFY COLUMN statement. */
+export function buildAlterTableModifyColumnStatement(input: AlterTableModifyColumnInput): BuiltAlterTableModifyColumnStatement {
+  const normalized = normalizeAlterTableModifyColumnInput(input);
+  return Object.freeze({
+    sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} MODIFY COLUMN ${renderAlterTableModifyColumn(normalized.definition)}`,
   });
 }
 

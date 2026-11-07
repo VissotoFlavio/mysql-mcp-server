@@ -1,6 +1,8 @@
 import type { RowDataPacket } from 'mysql2';
 
 import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
+import type { AlterTableModifyColumnDefinition, AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
+import type { CreateTableColumnType } from '../tools/create-table-input.js';
 
 import type { ConnectionLayer } from './pool.js';
 
@@ -108,6 +110,65 @@ const VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL = `
   WHERE tables.TABLE_SCHEMA = ?
     AND tables.TABLE_NAME = ?
   ORDER BY columns.ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_MODIFY_COLUMN_METADATA_SQL = `
+  SELECT
+    tables.TABLE_SCHEMA AS schemaName,
+    tables.TABLE_NAME AS tableName,
+    tables.TABLE_TYPE AS tableType,
+    columns.COLUMN_NAME AS columnName,
+    columns.ORDINAL_POSITION AS ordinalPosition,
+    columns.COLUMN_TYPE AS columnType,
+    columns.CHARACTER_SET_NAME AS characterSetName,
+    columns.COLLATION_NAME AS collationName,
+    columns.IS_NULLABLE AS isNullable,
+    columns.COLUMN_DEFAULT AS columnDefault,
+    columns.EXTRA AS extra
+  FROM information_schema.TABLES AS tables
+  INNER JOIN information_schema.COLUMNS AS columns
+    ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+    AND columns.TABLE_NAME = tables.TABLE_NAME
+  WHERE tables.TABLE_SCHEMA = ?
+    AND tables.TABLE_NAME = ?
+  ORDER BY columns.ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_MODIFY_COLUMN_STATISTICS_SQL = `
+  SELECT INDEX_NAME AS indexName, SEQ_IN_INDEX AS sequenceInIndex, COLUMN_NAME AS columnName,
+    SUB_PART AS subPart, EXPRESSION AS expression, INDEX_TYPE AS indexType
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY INDEX_NAME ASC, SEQ_IN_INDEX ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_MODIFY_COLUMN_CONSTRAINTS_SQL = `
+  SELECT key_columns.CONSTRAINT_NAME AS constraintName, key_columns.TABLE_NAME AS tableName,
+    key_columns.COLUMN_NAME AS columnName, key_columns.REFERENCED_TABLE_NAME AS referencedTableName,
+    key_columns.REFERENCED_COLUMN_NAME AS referencedColumnName, constraints.CONSTRAINT_TYPE AS constraintType
+  FROM information_schema.KEY_COLUMN_USAGE AS key_columns
+  INNER JOIN information_schema.TABLE_CONSTRAINTS AS constraints
+    ON constraints.CONSTRAINT_SCHEMA = key_columns.CONSTRAINT_SCHEMA
+    AND constraints.TABLE_NAME = key_columns.TABLE_NAME
+    AND constraints.CONSTRAINT_NAME = key_columns.CONSTRAINT_NAME
+  WHERE ((key_columns.TABLE_SCHEMA = ? AND key_columns.TABLE_NAME = ? AND key_columns.COLUMN_NAME = ?)
+      OR (key_columns.REFERENCED_TABLE_SCHEMA = ? AND key_columns.REFERENCED_TABLE_NAME = ? AND key_columns.REFERENCED_COLUMN_NAME = ?))
+  ORDER BY key_columns.CONSTRAINT_NAME ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_MODIFY_COLUMN_CHECKS_SQL = `
+  SELECT checks.CONSTRAINT_NAME AS constraintName
+  FROM information_schema.CHECK_CONSTRAINTS AS checks
+  INNER JOIN information_schema.TABLE_CONSTRAINTS AS constraints
+    ON constraints.CONSTRAINT_SCHEMA = checks.CONSTRAINT_SCHEMA
+    AND constraints.CONSTRAINT_NAME = checks.CONSTRAINT_NAME
+  WHERE constraints.CONSTRAINT_SCHEMA = ?
+    AND constraints.TABLE_NAME = ?
+    AND constraints.CONSTRAINT_TYPE = 'CHECK'
   LIMIT ?
 `;
 
@@ -233,6 +294,38 @@ interface AlterTableAddColumnMetadataRow extends RowDataPacket {
   readonly columnName: string;
   readonly ordinalPosition: number;
 }
+interface AlterTableModifyColumnMetadataRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly tableType: string;
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+  readonly columnType: string;
+  readonly characterSetName: string | null;
+  readonly collationName: string | null;
+  readonly isNullable: 'YES' | 'NO';
+  readonly columnDefault: unknown;
+  readonly extra: string;
+}
+interface AlterTableModifyColumnStatisticRow extends RowDataPacket {
+  readonly indexName: string;
+  readonly sequenceInIndex: number;
+  readonly columnName: string | null;
+  readonly subPart: number | null;
+  readonly expression: string | null;
+  readonly indexType: string;
+}
+interface AlterTableModifyColumnConstraintRow extends RowDataPacket {
+  readonly constraintName: string;
+  readonly tableName: string;
+  readonly columnName: string;
+  readonly referencedTableName: string | null;
+  readonly referencedColumnName: string | null;
+  readonly constraintType: string;
+}
+interface AlterTableModifyColumnCheckRow extends RowDataPacket {
+  readonly constraintName: string;
+}
 interface ForeignKeyTableRow extends RowDataPacket {
   readonly schemaName: string;
   readonly tableName: string;
@@ -346,6 +439,21 @@ export class AlterTableAddColumnMetadataError extends Error {
     this.code = code;
   }
 }
+export type AlterTableModifyColumnMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID';
+export class AlterTableModifyColumnMetadataError extends Error {
+  readonly code: AlterTableModifyColumnMetadataCode;
+  constructor(code: AlterTableModifyColumnMetadataCode, message: string) {
+    super(message);
+    this.name = 'AlterTableModifyColumnMetadataError';
+    this.code = code;
+  }
+}
+export class AlterTableModifyColumnVerificationError extends Error {
+  constructor(message = 'The modified column could not be verified.') {
+    super(message);
+    this.name = 'AlterTableModifyColumnVerificationError';
+  }
+}
 export type AlterTableRenameColumnMetadataCode =
   'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
 export class AlterTableRenameColumnMetadataError extends Error {
@@ -396,6 +504,9 @@ const CREATE_UNIQUE_INDEX_DUPLICATE_DATA = 'The requested unique index cannot be
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
+const ALTER_TABLE_MODIFY_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested column definition.';
+const ALTER_TABLE_MODIFY_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE MODIFY COLUMN is supported for base tables only.';
+const ALTER_TABLE_MODIFY_COLUMN_METADATA_COLUMN_INVALID = 'The current column definition is unknown, incompatible, or has an unsupported dependency.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE RENAME COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID = 'The source column is unknown or inaccessible.';
@@ -870,6 +981,284 @@ export async function validateAlterTableRenameColumnMetadata(
     throw new AlterTableRenameColumnMetadataError('MYSQL_DDL_COLUMN_INVALID', ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID);
   if (names.has(normalizedIdentifierName(newColumn)))
     throw new AlterTableRenameColumnMetadataError('MYSQL_DDL_COLUMN_EXISTS', ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_EXISTS);
+}
+
+const INTEGER_TYPE_RANK: Readonly<Record<string, number>> = Object.freeze({ tinyint: 1, smallint: 2, mediumint: 3, int: 4, bigint: 5 });
+
+function parseAlterTableModifyColumnType(value: unknown): CreateTableColumnType | undefined {
+  if (typeof value !== 'string') return undefined;
+  const type = value.trim().replaceAll(/\s+/gu, ' ').toLowerCase();
+  if (type === 'tinyint(1)') return { kind: 'boolean' };
+  const integer = /^(tinyint|smallint|mediumint|int|bigint)( unsigned)?$/u.exec(type);
+  if (integer !== null)
+    return {
+      kind: 'integer',
+      integerType: integer[1] as 'tinyint' | 'smallint' | 'mediumint' | 'int' | 'bigint',
+      ...(integer[2] ? { unsigned: true } : {}),
+    };
+  const decimal = /^decimal\(([0-9]+),([0-9]+)\)$/u.exec(type);
+  if (decimal !== null) {
+    const precision = Number(decimal[1]);
+    const scale = Number(decimal[2]);
+    if (
+      Number.isSafeInteger(precision) &&
+      precision >= 1 &&
+      precision <= 65 &&
+      Number.isSafeInteger(scale) &&
+      scale >= 0 &&
+      scale <= Math.min(30, precision)
+    )
+      return { kind: 'decimal', precision, scale };
+    return undefined;
+  }
+  const text = /^(char|varchar)\(([0-9]+)\)$/u.exec(type);
+  if (text !== null) {
+    const length = Number(text[2]);
+    return Number.isSafeInteger(length) && length >= 1 && length <= 255 ? { kind: text[1] as 'char' | 'varchar', length } : undefined;
+  }
+  if (type === 'text' || type === 'date' || type === 'json') return { kind: type };
+  const temporal = /^(time|datetime|timestamp)(?:\(([0-6])\))?$/u.exec(type);
+  if (temporal !== null)
+    return temporal[2] === undefined
+      ? { kind: temporal[1] as 'time' | 'datetime' | 'timestamp' }
+      : { kind: temporal[1] as 'time' | 'datetime' | 'timestamp', fractionalSecondsPrecision: Number(temporal[2]) };
+  return undefined;
+}
+
+function alterTableModifyColumnMetadataError(code: AlterTableModifyColumnMetadataCode): AlterTableModifyColumnMetadataError {
+  return new AlterTableModifyColumnMetadataError(
+    code,
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? ALTER_TABLE_MODIFY_COLUMN_METADATA_BASE_TABLE_ONLY
+      : code === 'MYSQL_DDL_COLUMN_INVALID'
+        ? ALTER_TABLE_MODIFY_COLUMN_METADATA_COLUMN_INVALID
+        : ALTER_TABLE_MODIFY_COLUMN_METADATA_UNAVAILABLE,
+  );
+}
+
+function isWideningColumnType(current: CreateTableColumnType, target: CreateTableColumnType): boolean {
+  if (current.kind === 'integer' && target.kind === 'integer') {
+    return current.unsigned === target.unsigned && INTEGER_TYPE_RANK[target.integerType] > INTEGER_TYPE_RANK[current.integerType];
+  }
+  if (current.kind === 'decimal' && target.kind === 'decimal') return current.scale === target.scale && target.precision > current.precision;
+  if ((current.kind === 'char' || current.kind === 'varchar') && current.kind === target.kind) return target.length > current.length;
+  if ((current.kind === 'time' || current.kind === 'datetime' || current.kind === 'timestamp') && current.kind === target.kind) {
+    const currentPrecision = current.fractionalSecondsPrecision ?? 0;
+    const targetPrecision = target.fractionalSecondsPrecision ?? 0;
+    return targetPrecision > currentPrecision;
+  }
+  return false;
+}
+
+/** @internal Reads bounded metadata and dependency information before one MODIFY COLUMN attempt. */
+export async function validateAlterTableModifyColumnMetadata(
+  mysql: ConnectionLayer,
+  input: AlterTableModifyColumnInput,
+): Promise<AlterTableModifyColumnInput> {
+  let rows: AlterTableModifyColumnMetadataRow[];
+  let statistics: AlterTableModifyColumnStatisticRow[];
+  let constraints: AlterTableModifyColumnConstraintRow[];
+  let checks: AlterTableModifyColumnCheckRow[];
+  try {
+    [rows] = await mysql.query<AlterTableModifyColumnMetadataRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_MODIFY_COLUMN_METADATA_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [statistics] = await mysql.query<AlterTableModifyColumnStatisticRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_MODIFY_COLUMN_STATISTICS_SQL), [
+      input.schema,
+      input.table,
+      MAX_INDEX_METADATA_RESULTS + 1,
+    ]);
+    [constraints] = await mysql.query<AlterTableModifyColumnConstraintRow[]>(
+      queryOptions(mysql, VALIDATE_ALTER_TABLE_MODIFY_COLUMN_CONSTRAINTS_SQL),
+      [input.schema, input.table, input.column, input.schema, input.table, input.column, MAX_METADATA_RESULTS + 1],
+    );
+    [checks] = await mysql.query<AlterTableModifyColumnCheckRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_MODIFY_COLUMN_CHECKS_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+
+  if (
+    !Array.isArray(rows) ||
+    rows.length === 0 ||
+    rows.length > MAX_METADATA_RESULTS ||
+    !Array.isArray(statistics) ||
+    statistics.length > MAX_INDEX_METADATA_RESULTS ||
+    !Array.isArray(constraints) ||
+    constraints.length > MAX_METADATA_RESULTS ||
+    !Array.isArray(checks) ||
+    checks.length > MAX_METADATA_RESULTS
+  )
+    throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const first = rows[0];
+  if (first === undefined || typeof first !== 'object' || first === null) throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const names = new Set<string>();
+  const ordinals = new Set<number>();
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.tableType) ||
+      !isNonEmptyString(row.columnName) ||
+      !Number.isInteger(row.ordinalPosition) ||
+      row.ordinalPosition <= 0 ||
+      !isNonEmptyString(row.columnType) ||
+      (row.characterSetName !== null && !isNonEmptyString(row.characterSetName)) ||
+      (row.collationName !== null && !isNonEmptyString(row.collationName)) ||
+      !['YES', 'NO'].includes(row.isNullable) ||
+      (row.columnDefault !== null && !['string', 'number', 'boolean'].includes(typeof row.columnDefault)) ||
+      typeof row.extra !== 'string' ||
+      row.schemaName !== input.schema ||
+      row.tableName !== input.table ||
+      row.tableType !== first.tableType ||
+      names.has(normalizedIdentifierName(row.columnName)) ||
+      ordinals.has(row.ordinalPosition)
+    )
+      throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    names.add(normalizedIdentifierName(row.columnName));
+    ordinals.add(row.ordinalPosition);
+  }
+  if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1))
+    throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  if (first.tableType !== 'BASE TABLE') throw alterTableModifyColumnMetadataError('MYSQL_DDL_TABLE_INVALID');
+
+  const source = rows.find((row) => normalizedIdentifierName(row.columnName) === normalizedIdentifierName(input.column));
+  if (source === undefined) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  const currentType = parseAlterTableModifyColumnType(source.columnType);
+  if (currentType === undefined) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  const extra = source.extra.trim().toLowerCase();
+  const autoIncrement = /(^|\s)auto_increment(\s|$)/u.test(extra);
+  const otherExtra = extra.replace(/(^|\s)auto_increment(?=\s|$)/gu, ' ').trim();
+  if (otherExtra.length > 0 || source.columnDefault !== null || /(^|\s)(?:virtual|stored)\s+generated(?=\s|$)|(^|\s)invisible(?=\s|$)/u.test(extra))
+    throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  if (autoIncrement !== (input.definition.autoIncrement === true)) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  if (source.isNullable === 'YES' && input.definition.nullable === false) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  const typeWidening = isWideningColumnType(currentType, input.definition.type);
+  const typeUnchanged = source.columnType.trim().replaceAll(/\s+/gu, ' ').toLowerCase() === renderColumnTypeForMetadata(input.definition.type);
+  const nullabilityWidening = source.isNullable === 'NO' && input.definition.nullable === true;
+  if (!typeWidening && !typeUnchanged) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  if (!typeWidening && !nullabilityWidening) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  if (typeWidening && typeUnchanged) throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+
+  let preparedDefinition: AlterTableModifyColumnDefinition = input.definition;
+  if (currentType.kind === 'char' || currentType.kind === 'varchar' || currentType.kind === 'text') {
+    if (source.characterSetName === null || source.collationName === null) throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    if (
+      (input.definition.characterSet !== undefined && input.definition.characterSet.toLowerCase() !== source.characterSetName.toLowerCase()) ||
+      (input.definition.collation !== undefined && input.definition.collation.toLowerCase() !== source.collationName.toLowerCase())
+    )
+      throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+    preparedDefinition = Object.freeze({ ...input.definition, characterSet: source.characterSetName, collation: source.collationName });
+  } else if (input.definition.characterSet !== undefined || input.definition.collation !== undefined) {
+    throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+
+  const indexNames = new Map<string, Set<number>>();
+  for (const statistic of statistics) {
+    if (
+      typeof statistic !== 'object' ||
+      statistic === null ||
+      !isNonEmptyString(statistic.indexName) ||
+      !Number.isInteger(statistic.sequenceInIndex) ||
+      statistic.sequenceInIndex <= 0 ||
+      !isNonEmptyString(statistic.columnName) ||
+      statistic.subPart !== null ||
+      statistic.expression !== null ||
+      !isNonEmptyString(statistic.indexType) ||
+      statistic.indexType.toUpperCase() !== 'BTREE'
+    )
+      throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+    if (statistic.columnName !== source.columnName) continue;
+    const positions = indexNames.get(statistic.indexName) ?? new Set<number>();
+    if (positions.has(statistic.sequenceInIndex)) throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    positions.add(statistic.sequenceInIndex);
+    indexNames.set(statistic.indexName, positions);
+  }
+  for (const constraint of constraints) {
+    if (
+      typeof constraint !== 'object' ||
+      constraint === null ||
+      !isNonEmptyString(constraint.constraintName) ||
+      !isNonEmptyString(constraint.tableName) ||
+      !isNonEmptyString(constraint.columnName) ||
+      (constraint.referencedTableName !== null && !isNonEmptyString(constraint.referencedTableName)) ||
+      (constraint.referencedColumnName !== null && !isNonEmptyString(constraint.referencedColumnName)) ||
+      !isNonEmptyString(constraint.constraintType)
+    )
+      throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    const constraintType = constraint.constraintType.toUpperCase();
+    if (constraintType === 'FOREIGN KEY' || (constraintType === 'PRIMARY KEY' && input.definition.nullable))
+      throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+  for (const check of checks) {
+    if (typeof check !== 'object' || check === null || !isNonEmptyString(check.constraintName))
+      throw alterTableModifyColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    throw alterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+  return Object.freeze({ ...input, definition: preparedDefinition });
+}
+
+/** @internal Verifies the bounded column definition after the DDL returns. */
+export async function verifyAlterTableModifyColumnMetadata(mysql: ConnectionLayer, input: AlterTableModifyColumnInput): Promise<void> {
+  let rows: AlterTableModifyColumnMetadataRow[];
+  try {
+    [rows] = await mysql.query<AlterTableModifyColumnMetadataRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_MODIFY_COLUMN_METADATA_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw new AlterTableModifyColumnVerificationError();
+  }
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS) throw new AlterTableModifyColumnVerificationError();
+  const source = rows.find(
+    (row) => typeof row.columnName === 'string' && normalizedIdentifierName(row.columnName) === normalizedIdentifierName(input.column),
+  );
+  if (source === undefined || source.tableType !== 'BASE TABLE') throw new AlterTableModifyColumnVerificationError();
+  const currentType = parseAlterTableModifyColumnType(source.columnType);
+  if (currentType === undefined || renderColumnTypeForMetadata(currentType) !== renderColumnTypeForMetadata(input.definition.type))
+    throw new AlterTableModifyColumnVerificationError();
+  if (source.isNullable !== (input.definition.nullable ? 'YES' : 'NO')) throw new AlterTableModifyColumnVerificationError();
+  const currentAutoIncrement = /(^|\s)auto_increment(\s|$)/u.test(source.extra.trim().toLowerCase());
+  if (currentAutoIncrement !== (input.definition.autoIncrement === true)) throw new AlterTableModifyColumnVerificationError();
+  if (input.definition.characterSet !== undefined || input.definition.collation !== undefined) {
+    if (
+      source.characterSetName?.toLowerCase() !== input.definition.characterSet?.toLowerCase() ||
+      source.collationName?.toLowerCase() !== input.definition.collation?.toLowerCase()
+    )
+      throw new AlterTableModifyColumnVerificationError();
+  }
+}
+
+function renderColumnTypeForMetadata(type: CreateTableColumnType): string {
+  switch (type.kind) {
+    case 'integer':
+      return `${type.integerType}${type.unsigned === true ? ' unsigned' : ''}`;
+    case 'decimal':
+      return `decimal(${type.precision},${type.scale})`;
+    case 'char':
+    case 'varchar':
+      return `${type.kind}(${type.length})`;
+    case 'text':
+      return 'text';
+    case 'date':
+      return 'date';
+    case 'boolean':
+      return 'tinyint(1)';
+    case 'json':
+      return 'json';
+    case 'time':
+    case 'datetime':
+    case 'timestamp':
+      return `${type.kind}${type.fractionalSecondsPrecision === undefined ? '' : `(${type.fractionalSecondsPrecision})`}`;
+  }
 }
 
 /** @internal Reads bounded table metadata before one intra-schema RENAME TABLE attempt. */

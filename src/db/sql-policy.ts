@@ -209,6 +209,12 @@ function readIdentifier(sql: string, index: number): readonly [string, number] {
   return [identifier, end + 1];
 }
 
+function readMetadataName(sql: string, index: number): readonly [string, number] {
+  const match = /^[A-Za-z0-9_]+/u.exec(sql.slice(index));
+  if (match === null) failDdlPolicy();
+  return [match[0], index + match[0].length];
+}
+
 function readColumnType(sql: string, index: number): readonly [CreateTableColumnKind, number] {
   if (sql.startsWith('TINYINT(1)', index)) return ['other', index + 'TINYINT(1)'.length];
 
@@ -242,6 +248,14 @@ function readColumn(sql: string, index: number): readonly [ParsedCreateTableColu
   const [name, afterName] = readIdentifier(sql, index);
   const [kind, afterType] = readColumnType(sql, readExpected(sql, afterName, ' '));
   let next = afterType;
+  if (sql.startsWith(' CHARACTER SET ', next)) {
+    next += ' CHARACTER SET '.length;
+    [, next] = readMetadataName(sql, next);
+    next = readExpected(sql, next, ' COLLATE ');
+    [, next] = readMetadataName(sql, next);
+  } else if (sql.startsWith(' COLLATE ', next)) {
+    failDdlPolicy();
+  }
   let nullable: boolean;
   if (sql.startsWith(' NOT NULL', next)) {
     nullable = false;
@@ -352,6 +366,18 @@ export function assertAlterTableAddColumnSql(sql: string): void {
   index = readExpected(sql, index, ' ADD COLUMN ');
   const [column, afterColumn] = readColumn(sql, index);
   if (!column.nullable || column.autoIncrement || afterColumn !== sql.length) failDdlPolicy();
+}
+
+/** Defense in depth for the canonical one-column ALTER TABLE MODIFY COLUMN grammar. */
+export function assertAlterTableModifyColumnSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'ALTER TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' MODIFY COLUMN ');
+  const [, afterColumn] = readColumn(sql, index);
+  if (afterColumn !== sql.length) failDdlPolicy();
 }
 
 /** Defense in depth for the canonical one-column RENAME COLUMN grammar. */

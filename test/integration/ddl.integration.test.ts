@@ -37,6 +37,10 @@ interface ForeignKeyRow extends RowDataPacket {
   readonly DELETE_RULE: string;
 }
 
+interface ColumnTypeRow extends RowDataPacket {
+  readonly COLUMN_TYPE: string;
+}
+
 test('runs the opt-in CREATE TABLE contract against an explicitly isolated schema', { skip: !enabled }, async () => {
   assert.match(table ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,50}$/);
   assert.match(parentTable ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,57}$/);
@@ -99,7 +103,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
         table,
         columns: [
           { name: 'id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: false, autoIncrement: true },
-          { name: 'label', type: { kind: 'varchar', length: 255 }, nullable: false },
+          { name: 'label', type: { kind: 'varchar', length: 100 }, nullable: false },
           { name: 'parent_id', type: { kind: 'integer', integerType: 'bigint', unsigned: true }, nullable: true },
           { name: 'unique_value', type: { kind: 'varchar', length: 255 }, nullable: false },
           { name: 'duplicate_value', type: { kind: 'varchar', length: 255 }, nullable: false },
@@ -219,6 +223,28 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     };
     assert.ok(afterAlter.columns.some((column) => column.columnName === 'note' && column.dataType === 'varchar' && column.isNullable));
 
+    const modifyColumnResponse = await request('tools/call', {
+      name: 'alter_table_modify_column',
+      arguments: {
+        schema,
+        table,
+        column: 'label',
+        definition: { name: 'label', type: { kind: 'varchar', length: 255 }, nullable: false },
+        reason: 'Widen the isolated label column without changing nullability',
+      },
+    });
+    const modifyColumnResult = modifyColumnResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; column: string };
+    };
+    assert.equal(modifyColumnResult.operation, 'alter_table_modify_column');
+    assert.deepEqual(modifyColumnResult.target, { schema, table, column: 'label' });
+    const afterModifyResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    const afterModify = afterModifyResponse.result?.structuredContent as {
+      columns: readonly { columnName: string; dataType: string; isNullable: boolean }[];
+    };
+    assert.ok(afterModify.columns.some((column) => column.columnName === 'label' && column.dataType === 'varchar' && !column.isNullable));
+
     const foreignKeyResponse = await request('tools/call', {
       name: 'alter_table_add_foreign_key',
       arguments: {
@@ -305,6 +331,11 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
           DELETE_RULE: 'RESTRICT',
         },
       ]);
+      const [columnTypes] = await verificationConnection.query<ColumnTypeRow[]>(
+        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+        [schema, table, 'label'],
+      );
+      assert.deepEqual(columnTypes, [{ COLUMN_TYPE: 'varchar(255)' }]);
     } finally {
       await verificationConnection.end();
     }
