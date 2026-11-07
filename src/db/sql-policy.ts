@@ -356,6 +356,18 @@ export function assertCreateUniqueIndexSql(sql: string): void {
   assertCreateIndexSql(`CREATE INDEX ${sql.slice('CREATE UNIQUE INDEX '.length)}`);
 }
 
+/** Defense in depth for the canonical, named secondary-index DROP INDEX grammar. */
+export function assertDropIndexSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'DROP INDEX ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' ON ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  if (index !== sql.length) failDdlPolicy();
+}
+
 /** Defense in depth for the canonical one-column nullable ALTER TABLE grammar. */
 export function assertAlterTableAddColumnSql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();

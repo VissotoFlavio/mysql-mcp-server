@@ -10,6 +10,7 @@ import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/creat
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
+import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
@@ -21,6 +22,7 @@ import {
   buildCreateIndexStatement,
   buildCreateTableStatement,
   buildCreateUniqueIndexStatement,
+  buildDropIndexStatement,
   buildRenameTableStatement,
 } from './ddl-builder.js';
 import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
@@ -42,6 +44,7 @@ import {
   assertAlterTableRenameColumnSql,
   assertCreateIndexSql,
   assertCreateUniqueIndexSql,
+  assertDropIndexSql,
   assertCreateTableSql,
   assertRenameTableSql,
   assertDmlSql,
@@ -337,6 +340,7 @@ declare const dmlStatementBrand: unique symbol;
 declare const createTableStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
+declare const dropIndexStatementBrand: unique symbol;
 declare const alterTableAddColumnStatementBrand: unique symbol;
 declare const alterTableAddForeignKeyStatementBrand: unique symbol;
 declare const alterTableModifyColumnStatementBrand: unique symbol;
@@ -355,6 +359,9 @@ export interface CreateIndexStatement {
 }
 export interface CreateUniqueIndexStatement {
   readonly [createUniqueIndexStatementBrand]: true;
+}
+export interface DropIndexStatement {
+  readonly [dropIndexStatementBrand]: true;
 }
 export interface AlterTableAddColumnStatement {
   readonly [alterTableAddColumnStatementBrand]: true;
@@ -384,6 +391,11 @@ export interface DdlConnectionLayer {
   executeCreateIndexWithOperationId(statement: CreateIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeCreateUniqueIndex(statement: CreateUniqueIndexStatement): Promise<CreateTableExecutionResult>;
   executeCreateUniqueIndexWithOperationId(statement: CreateUniqueIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeDropIndex(statement: DropIndexStatement): Promise<CreateTableExecutionResult>;
+  executeDropIndexWithOperationId(
+    statement: DropIndexStatement,
+    verify?: () => Promise<void>,
+  ): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult>;
   executeAlterTableAddColumnWithOperationId(statement: AlterTableAddColumnStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableAddForeignKey(statement: AlterTableAddForeignKeyStatement): Promise<CreateTableExecutionResult>;
@@ -428,6 +440,7 @@ type DdlStatement =
   | CreateTableStatement
   | CreateIndexStatement
   | CreateUniqueIndexStatement
+  | DropIndexStatement
   | AlterTableAddColumnStatement
   | AlterTableAddForeignKeyStatement
   | AlterTableModifyColumnStatement
@@ -437,6 +450,7 @@ type DdlStatementData =
   | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
+  | Readonly<{ operation: 'drop_index'; sql: string; input: DropIndexInput }>
   | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>
   | Readonly<{ operation: 'alter_table_add_foreign_key'; sql: string; input: AlterTableAddForeignKeyInput }>
   | Readonly<{ operation: 'alter_table_modify_column'; sql: string; input: AlterTableModifyColumnInput }>
@@ -486,6 +500,21 @@ export function createCreateUniqueIndexStatement(input: CreateUniqueIndexInput):
   }
   const statement = Object.freeze({}) as CreateUniqueIndexStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_unique_index', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported named secondary-index DROP INDEX statement. */
+export function createDropIndexStatement(input: DropIndexInput): DropIndexStatement {
+  let sql: string;
+  let normalized: DropIndexInput;
+  try {
+    normalized = normalizeDropIndexInput(input);
+    sql = buildDropIndexStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as DropIndexStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_index', sql, input: normalized }));
   return statement;
 }
 
@@ -858,6 +887,7 @@ export function createConnectionLayer({
       if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
+      else if (statementData.operation === 'drop_index') assertDropIndexSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_column') assertAlterTableAddColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_foreign_key') assertAlterTableAddForeignKeySql(statementData.sql);
       else if (statementData.operation === 'alter_table_modify_column') assertAlterTableModifyColumnSql(statementData.sql);
@@ -898,6 +928,12 @@ export function createConnectionLayer({
       return result;
     },
     executeCreateUniqueIndexWithOperationId: (statement: CreateUniqueIndexStatement) => executeDdlWithOperationId(statement, 'create_unique_index'),
+    async executeDropIndex(statement: DropIndexStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'drop_index');
+      return result;
+    },
+    executeDropIndexWithOperationId: (statement: DropIndexStatement, verify?: () => Promise<void>) =>
+      executeDdlWithOperationId(statement, 'drop_index', verify),
     async executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'alter_table_add_column');
       return result;
