@@ -94,6 +94,24 @@ The MySQL account needs narrowly scoped `SELECT` on the target table for metadat
 
 `create_unique_index` uses the same exact structured request and is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit confirmation because it adds a persistent integrity constraint. The preflight checks the base table, visible non-generated columns, index name, primary/equivalent unique keys, and only the existence of a fully non-NULL duplicate tuple; no tuple values are returned or audited. Use narrowly scoped `SELECT` on the target table for metadata and duplicate preflight plus minimum `INDEX` privilege, verify the named index after success, and after an indeterminate outcome verify state and wait for renewed operator direction rather than retrying.
 
+### Controlled index removal
+
+`drop_index` is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit operator confirmation for exactly `{ schema, table, index, reason }`. The preflight accepts only an explicitly named visible secondary, non-unique, ascending B-tree whose entries are ordinary whole columns. It rejects `PRIMARY`, unique or unique-equivalent definitions, indexes supporting a foreign key, functional, prefix, descending, non-B-tree, invisible, and other unsupported definitions, as well as views and invalid metadata. It never removes a constraint or another index implicitly and never accepts SQL, expressions, or options.
+
+The account needs narrowly scoped metadata `SELECT` plus the minimum `INDEX` privilege required to remove the named index. The server emits only its internally generated canonical statement, records a sanitized audit event with an operation ID, and verifies after execution that the named index is absent. Permission, structural, lock/deadlock, metadata, and indeterminate outcomes are sanitized; an indeterminate or failed post-verification must be checked through read-only metadata before any newly approved request, and the operation is never retried automatically.
+
+```json
+{
+  "name": "drop_index",
+  "arguments": {
+    "schema": "demo_catalog",
+    "table": "sample_events",
+    "index": "sample_events_label_idx",
+    "reason": "Remove the redundant label lookup index"
+  }
+}
+```
+
 ## Opt-in integration testing
 
 Integration tests are intentionally excluded from normal validation because DML changes data. Run them only against an isolated disposable database after explicit authorization, with credentials supplied externally:
@@ -109,7 +127,7 @@ npm run test:integration
 
 The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
 
-The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, seeds only that table through `insert_rows`, verifies it through MCP metadata, creates and verifies non-unique and unique indexes, verifies a duplicate-data rejection for the unique index, adds a nullable column, then drops that table (and therefore its indexes) during cleanup. It needs narrowly scoped `SELECT`, plus `CREATE`, `INSERT`, `INDEX`, `ALTER`, and `DROP` on the isolated schema. It remains skipped unless all of these values are explicitly supplied:
+The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, seeds only that table through `insert_rows`, verifies it through MCP metadata, creates and verifies non-unique and unique indexes, exercises `drop_index` for the removable index and its protected-index rejections, verifies a duplicate-data rejection for the unique index, adds a nullable column, then drops that table (and therefore its remaining indexes) during cleanup. It needs narrowly scoped `SELECT`, plus `CREATE`, `INSERT`, `INDEX`, `ALTER`, and `DROP` on the isolated schema. It remains skipped unless all of these values are explicitly supplied:
 
 ```powershell
 $env:MYSQL_INTEGRATION_TEST = 'true'

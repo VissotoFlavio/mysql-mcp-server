@@ -5,6 +5,7 @@ import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput 
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
+import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 export interface BuiltCreateTableStatement {
@@ -14,6 +15,9 @@ export interface BuiltCreateIndexStatement {
   readonly sql: string;
 }
 export interface BuiltCreateUniqueIndexStatement {
+  readonly sql: string;
+}
+export interface BuiltDropIndexStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableAddColumnStatement {
@@ -103,6 +107,14 @@ export function buildCreateUniqueIndexStatement(input: CreateUniqueIndexInput): 
   const normalized = normalizeCreateUniqueIndexInput(input);
   return Object.freeze({
     sql: `CREATE UNIQUE INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${normalized.columns.map(escapeIdentifier).join(', ')})`,
+  });
+}
+
+/** Produces the sole canonical SQL representation for the supported DROP INDEX input. */
+export function buildDropIndexStatement(input: DropIndexInput): BuiltDropIndexStatement {
+  const normalized = normalizeDropIndexInput(input);
+  return Object.freeze({
+    sql: `DROP INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)}`,
   });
 }
 

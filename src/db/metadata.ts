@@ -229,6 +229,44 @@ const VALIDATE_CREATE_INDEX_STATISTICS_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_DROP_INDEX_TABLE_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  LIMIT 2
+`;
+
+const VALIDATE_DROP_INDEX_FOREIGN_KEYS_SQL = `
+  SELECT CONSTRAINT_SCHEMA AS constraintSchemaName, TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName,
+    CONSTRAINT_NAME AS constraintName, COLUMN_NAME AS columnName, ORDINAL_POSITION AS ordinalPosition,
+    REFERENCED_TABLE_SCHEMA AS referencedSchemaName, REFERENCED_TABLE_NAME AS referencedTableName,
+    REFERENCED_COLUMN_NAME AS referencedColumnName
+  FROM information_schema.KEY_COLUMN_USAGE
+  WHERE REFERENCED_TABLE_NAME IS NOT NULL
+    AND ((TABLE_SCHEMA = ? AND TABLE_NAME = ?) OR (REFERENCED_TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME = ?))
+  ORDER BY CONSTRAINT_SCHEMA ASC, TABLE_SCHEMA ASC, TABLE_NAME ASC, CONSTRAINT_NAME ASC, ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+
+const VALIDATE_DROP_INDEX_STATISTICS_SQL = `
+  SELECT
+    TABLE_SCHEMA AS schemaName,
+    TABLE_NAME AS tableName,
+    INDEX_NAME AS indexName,
+    NON_UNIQUE AS nonUnique,
+    SEQ_IN_INDEX AS sequenceInIndex,
+    COLLATION AS collation,
+    COLUMN_NAME AS columnName,
+    SUB_PART AS subPart,
+    EXPRESSION AS expression,
+    INDEX_TYPE AS indexType,
+    IS_VISIBLE AS isVisible
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY INDEX_NAME ASC, SEQ_IN_INDEX ASC
+  LIMIT ?
+`;
+
 interface SchemaRow extends RowDataPacket {
   readonly schemaName: string;
 }
@@ -279,6 +317,25 @@ interface CreateIndexStatisticRow extends RowDataPacket {
   readonly subPart: number | null;
   readonly expression: string | null;
   readonly indexType: string;
+}
+interface DropIndexStatisticRow extends CreateIndexStatisticRow {
+  readonly isVisible: 'YES' | 'NO';
+}
+interface DropIndexTableRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly tableType: string;
+}
+interface DropIndexForeignKeyRow extends RowDataPacket {
+  readonly constraintSchemaName: string;
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly constraintName: string;
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+  readonly referencedSchemaName: string;
+  readonly referencedTableName: string;
+  readonly referencedColumnName: string;
 }
 interface DuplicateTupleRow extends RowDataPacket {
   readonly duplicateExists: unknown;
@@ -428,6 +485,23 @@ export class CreateUniqueIndexMetadataError extends Error {
   }
 }
 
+export type DropIndexMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
+export class DropIndexMetadataError extends Error {
+  readonly code: DropIndexMetadataCode;
+
+  constructor(code: DropIndexMetadataCode, message: string) {
+    super(message);
+    this.name = 'DropIndexMetadataError';
+    this.code = code;
+  }
+}
+export class DropIndexVerificationError extends Error {
+  constructor() {
+    super('The dropped index could not be verified.');
+    this.name = 'DropIndexVerificationError';
+  }
+}
+
 export type AlterTableAddColumnMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
 
 export class AlterTableAddColumnMetadataError extends Error {
@@ -501,6 +575,9 @@ const CREATE_INDEX_METADATA_COLUMN_INVALID = 'One or more supplied index columns
 const CREATE_INDEX_METADATA_EXISTS = 'The requested index name or definition already exists.';
 const CREATE_UNIQUE_INDEX_METADATA_EXISTS = 'The requested index name, primary key, or unique definition already exists.';
 const CREATE_UNIQUE_INDEX_DUPLICATE_DATA = 'The requested unique index cannot be created because duplicate non-null tuples exist.';
+const DROP_INDEX_METADATA_UNAVAILABLE = 'Unable to validate the requested index metadata.';
+const DROP_INDEX_METADATA_BASE_TABLE_ONLY = 'DROP INDEX metadata is supported for base tables only.';
+const DROP_INDEX_METADATA_NOT_REMOVABLE = 'The named index is not a removable secondary index.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
@@ -896,6 +973,230 @@ export async function validateCreateUniqueIndexMetadata(
     if (error instanceof CreateUniqueIndexMetadataError) throw error;
     if (error instanceof CreateIndexMetadataError) throw new CreateUniqueIndexMetadataError(error.code, error.message);
     throw new CreateUniqueIndexMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_INDEX_METADATA_UNAVAILABLE);
+  }
+}
+
+type DropIndexDefinition = Readonly<{
+  name: string;
+  nonUnique: number;
+  columns: readonly string[];
+  supported: boolean;
+}>;
+
+function dropIndexMetadataError(code: DropIndexMetadataCode): DropIndexMetadataError {
+  return new DropIndexMetadataError(
+    code,
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? DROP_INDEX_METADATA_BASE_TABLE_ONLY
+      : code === 'MYSQL_DDL_STRUCTURE_INVALID'
+        ? DROP_INDEX_METADATA_NOT_REMOVABLE
+        : DROP_INDEX_METADATA_UNAVAILABLE,
+  );
+}
+
+function validateDropIndexStatisticRow(row: unknown, schema: string, table: string): row is DropIndexStatisticRow {
+  if (typeof row !== 'object' || row === null) return false;
+  const statistic = row as DropIndexStatisticRow;
+  const subPart = statistic.subPart;
+  return (
+    isNonEmptyString(statistic.schemaName) &&
+    isNonEmptyString(statistic.tableName) &&
+    isNonEmptyString(statistic.indexName) &&
+    Number.isInteger(statistic.nonUnique) &&
+    [0, 1].includes(statistic.nonUnique) &&
+    Number.isInteger(statistic.sequenceInIndex) &&
+    statistic.sequenceInIndex > 0 &&
+    statistic.sequenceInIndex <= 16 &&
+    (statistic.collation === null || ['A', 'D'].includes(statistic.collation)) &&
+    (statistic.columnName === null || isNonEmptyString(statistic.columnName)) &&
+    (subPart === null || (typeof subPart === 'number' && Number.isInteger(subPart) && subPart > 0)) &&
+    (statistic.expression === null || isNonEmptyString(statistic.expression)) &&
+    isNonEmptyString(statistic.indexType) &&
+    ['YES', 'NO'].includes(statistic.isVisible) &&
+    statistic.schemaName === schema &&
+    statistic.tableName === table
+  );
+}
+
+function orderedDropIndexGroups(statistics: readonly DropIndexStatisticRow[]): Map<string, readonly DropIndexStatisticRow[]> {
+  const groups = new Map<string, DropIndexStatisticRow[]>();
+  for (const statistic of statistics) {
+    const key = normalizedIdentifierName(statistic.indexName);
+    const entries = groups.get(key) ?? [];
+    if (entries.some((entry) => entry.sequenceInIndex === statistic.sequenceInIndex)) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    entries.push(statistic);
+    groups.set(key, entries);
+  }
+  const ordered = new Map<string, readonly DropIndexStatisticRow[]>();
+  for (const [key, entries] of groups) {
+    const values = [...entries].sort((left, right) => left.sequenceInIndex - right.sequenceInIndex);
+    if (values.some((entry, position) => entry.sequenceInIndex !== position + 1)) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    if (values.some((entry) => entry.nonUnique !== values[0]?.nonUnique)) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    ordered.set(key, values);
+  }
+  return ordered;
+}
+
+function dropIndexDefinition(entries: readonly DropIndexStatisticRow[]): DropIndexDefinition {
+  return Object.freeze({
+    name: entries[0]?.indexName ?? '',
+    nonUnique: entries[0]?.nonUnique ?? -1,
+    columns: Object.freeze(entries.map((entry) => entry.columnName ?? '')),
+    supported:
+      entries.length > 0 &&
+      entries.every(
+        (entry) =>
+          entry.columnName !== null &&
+          entry.subPart === null &&
+          entry.expression === null &&
+          entry.collation === 'A' &&
+          entry.indexType.toUpperCase() === 'BTREE' &&
+          entry.isVisible === 'YES',
+      ),
+  });
+}
+
+function sameDropIndexColumns(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((column, position) => normalizedIdentifierName(column) === normalizedIdentifierName(right[position] ?? ''))
+  );
+}
+
+function hasForeignKeyPrefix(indexColumns: readonly string[], foreignKeyColumns: readonly string[]): boolean {
+  return (
+    foreignKeyColumns.length > 0 &&
+    indexColumns.length >= foreignKeyColumns.length &&
+    foreignKeyColumns.every((column, position) => normalizedIdentifierName(indexColumns[position] ?? '') === normalizedIdentifierName(column))
+  );
+}
+
+async function readDropIndexStatistics(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+): Promise<Map<string, readonly DropIndexStatisticRow[]>> {
+  let statistics: DropIndexStatisticRow[];
+  try {
+    [statistics] = await mysql.query<DropIndexStatisticRow[]>(queryOptions(mysql, VALIDATE_DROP_INDEX_STATISTICS_SQL), [
+      schema,
+      table,
+      MAX_INDEX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (!Array.isArray(statistics) || statistics.length > MAX_INDEX_METADATA_RESULTS) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+  for (const statistic of statistics) {
+    if (!validateDropIndexStatisticRow(statistic, schema, table)) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  return orderedDropIndexGroups(statistics);
+}
+
+/** @internal Validates that one named index is a removable secondary B-tree. */
+export async function validateDropIndexMetadata(mysql: ConnectionLayer, schema: string, table: string, index: string): Promise<void> {
+  let tables: DropIndexTableRow[];
+  let foreignKeys: DropIndexForeignKeyRow[];
+  try {
+    [tables] = await mysql.query<DropIndexTableRow[]>(queryOptions(mysql, VALIDATE_DROP_INDEX_TABLE_SQL), [schema, table]);
+    [foreignKeys] = await mysql.query<DropIndexForeignKeyRow[]>(queryOptions(mysql, VALIDATE_DROP_INDEX_FOREIGN_KEYS_SQL), [
+      schema,
+      table,
+      schema,
+      table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (!Array.isArray(tables) || tables.length > 1) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const tableRow = tables[0];
+  if (
+    tableRow === undefined ||
+    !isNonEmptyString(tableRow.schemaName) ||
+    !isNonEmptyString(tableRow.tableName) ||
+    !isNonEmptyString(tableRow.tableType) ||
+    tableRow.schemaName !== schema ||
+    tableRow.tableName !== table
+  )
+    throw dropIndexMetadataError('MYSQL_DDL_TABLE_INVALID');
+  if (tableRow.tableType !== 'BASE TABLE') throw dropIndexMetadataError('MYSQL_DDL_TABLE_INVALID');
+  if (!Array.isArray(foreignKeys) || foreignKeys.length > MAX_METADATA_RESULTS) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+
+  const groups = await readDropIndexStatistics(mysql, schema, table);
+  const targetEntries = groups.get(normalizedIdentifierName(index));
+  if (targetEntries === undefined || targetEntries.length === 0) throw dropIndexMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+  const target = dropIndexDefinition(targetEntries);
+  if (normalizedIdentifierName(index) === 'primary' || target.nonUnique !== 1 || !target.supported) {
+    throw dropIndexMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+  }
+
+  for (const entries of groups.values()) {
+    const candidate = dropIndexDefinition(entries);
+    if (candidate.nonUnique === 0 && candidate.supported && sameDropIndexColumns(target.columns, candidate.columns))
+      throw dropIndexMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+  }
+
+  const foreignKeyGroups = new Map<string, DropIndexForeignKeyRow[]>();
+  for (const row of foreignKeys) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.constraintSchemaName) ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.constraintName) ||
+      !isNonEmptyString(row.columnName) ||
+      !Number.isInteger(row.ordinalPosition) ||
+      row.ordinalPosition <= 0 ||
+      row.ordinalPosition > 16 ||
+      !isNonEmptyString(row.referencedSchemaName) ||
+      !isNonEmptyString(row.referencedTableName) ||
+      !isNonEmptyString(row.referencedColumnName) ||
+      row.constraintSchemaName !== row.schemaName ||
+      ((row.schemaName !== schema || row.tableName !== table) && (row.referencedSchemaName !== schema || row.referencedTableName !== table))
+    )
+      throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    const key = JSON.stringify([row.constraintSchemaName, row.schemaName, row.tableName, row.constraintName]);
+    const entries = foreignKeyGroups.get(key) ?? [];
+    if (entries.some((entry) => entry.ordinalPosition === row.ordinalPosition)) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    entries.push(row);
+    foreignKeyGroups.set(key, entries);
+  }
+  for (const entries of foreignKeyGroups.values()) {
+    const ordered = [...entries].sort((left, right) => left.ordinalPosition - right.ordinalPosition);
+    if (ordered.some((entry, position) => entry.ordinalPosition !== position + 1)) throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    const sourceIsTarget = ordered.every((entry) => entry.schemaName === schema && entry.tableName === table);
+    const referencedIsTarget = ordered.every((entry) => entry.referencedSchemaName === schema && entry.referencedTableName === table);
+    if (
+      (!sourceIsTarget && ordered.some((entry) => entry.schemaName === schema && entry.tableName === table)) ||
+      (!referencedIsTarget && ordered.some((entry) => entry.referencedSchemaName === schema && entry.referencedTableName === table))
+    )
+      throw dropIndexMetadataError('MYSQL_DDL_METADATA_INVALID');
+    if (
+      (sourceIsTarget &&
+        hasForeignKeyPrefix(
+          target.columns,
+          ordered.map((entry) => entry.columnName),
+        )) ||
+      (referencedIsTarget &&
+        hasForeignKeyPrefix(
+          target.columns,
+          ordered.map((entry) => entry.referencedColumnName),
+        ))
+    )
+      throw dropIndexMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+  }
+}
+
+/** @internal Confirms that the named index no longer exists after DROP INDEX. */
+export async function verifyDropIndexMetadata(mysql: ConnectionLayer, schema: string, table: string, index: string): Promise<void> {
+  try {
+    const groups = await readDropIndexStatistics(mysql, schema, table);
+    if (groups.has(normalizedIdentifierName(index))) throw new DropIndexVerificationError();
+  } catch (error) {
+    if (error instanceof DropIndexVerificationError) throw error;
+    throw new DropIndexVerificationError();
   }
 }
 
