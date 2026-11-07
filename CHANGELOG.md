@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 - 2026-11-06
 
 - [#77 — ddl: expose controlled alter_table_modify_column MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/77)
 
