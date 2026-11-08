@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0 - 2026-11-08
+
+- [#83 — feat: add controlled projection-only `create_view`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/83)
+
 ## 0.12.0 - 2026-11-08
 
 - [#76 — ddl: expose controlled alter_table_drop_foreign_key MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/76)

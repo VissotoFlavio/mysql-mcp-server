@@ -17,6 +17,7 @@ const enabled =
 const schema = process.env.MYSQL_INTEGRATION_SCHEMA ?? process.env.MYSQL_DATABASE;
 const table = process.env.MYSQL_DDL_INTEGRATION_TABLE;
 const parentTable = table === undefined ? undefined : `${table}_parent`;
+const view = table === undefined ? undefined : `${table}_view`;
 
 interface JsonRpcResponse {
   readonly result?: Record<string, unknown>;
@@ -44,6 +45,7 @@ interface ColumnTypeRow extends RowDataPacket {
 test('runs the opt-in CREATE TABLE contract against an explicitly isolated schema', { skip: !enabled }, async () => {
   assert.match(table ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,50}$/);
   assert.match(parentTable ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,57}$/);
+  assert.match(view ?? '', /^mcp_ddl_test_[A-Za-z0-9_]{1,55}$/);
   assert.match(schema ?? '', /^[A-Za-z0-9_]{1,64}$/);
 
   const connectionConfig = loadConnectionConfig();
@@ -53,6 +55,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
   let requestId = 0;
   let createRequested = false;
   let parentCreateRequested = false;
+  let viewCreateRequested = false;
   let applicationClosed = false;
   client.onmessage = (message) => {
     if (typeof message === 'object' && message !== null && 'id' in message && typeof message.id === 'number') {
@@ -81,6 +84,8 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.equal(existingResponse.result?.isError, true, 'the temporary test table must not already exist');
     const existingParentResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table: parentTable } });
     assert.equal(existingParentResponse.result?.isError, true, 'the temporary parent table must not already exist');
+    const existingViewResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table: view } });
+    assert.equal(existingViewResponse.result?.isError, true, 'the temporary test view must not already exist');
 
     parentCreateRequested = true;
     const createdParentResponse = await request('tools/call', {
@@ -115,6 +120,25 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     const createResult = createdResponse.result?.structuredContent as { operation: string; target: { schema: string; table: string } };
     assert.equal(createResult.operation, 'create_table');
     assert.deepEqual(createResult.target, { schema, table });
+
+    const viewResponse = await request('tools/call', {
+      name: 'create_view',
+      arguments: {
+        schema,
+        view,
+        definition: { table, columns: ['id', 'label'] },
+        reason: 'Create the isolated projection-only test view',
+      },
+    });
+    const viewResult = viewResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; view: string };
+      source: { schema: string; table: string; columns: readonly string[] };
+    };
+    assert.equal(viewResult.operation, 'create_view');
+    assert.deepEqual(viewResult.target, { schema, view });
+    assert.deepEqual(viewResult.source, { schema, table, columns: ['id', 'label'] });
+    viewCreateRequested = true;
 
     const describedResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
     const described = describedResponse.result?.structuredContent as { table: { schemaName: string; tableName: string; tableType: string } };
@@ -384,6 +408,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
         ssl: connectionConfig.tls ? { ...connectionConfig.tls } : undefined,
       });
       try {
+        if (viewCreateRequested) await cleanupConnection.query(`DROP VIEW IF EXISTS \`${schema}\`.\`${view}\``);
         if (createRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
         if (parentCreateRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${parentTable}\``);
       } finally {

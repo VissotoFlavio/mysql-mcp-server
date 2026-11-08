@@ -19,6 +19,7 @@ import { registerAlterTableRenameColumnTool } from './tools/alter-table-rename-c
 import { registerCreateIndexTool } from './tools/create-index.js';
 import { registerCreateTableTool } from './tools/create-table.js';
 import { registerCreateUniqueIndexTool } from './tools/create-unique-index.js';
+import { registerCreateViewTool } from './tools/create-view.js';
 import { registerDeleteRowsTool } from './tools/delete-rows.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
@@ -66,6 +67,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
   }
   if (mysql.ddlEnabled) {
     registerCreateTableTool(server, mysql);
+    registerCreateViewTool(server, mysql);
     registerCreateIndexTool(server, mysql);
     registerCreateUniqueIndexTool(server, mysql);
     registerDropIndexTool(server, mysql);
