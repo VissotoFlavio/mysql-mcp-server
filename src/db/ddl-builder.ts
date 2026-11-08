@@ -8,6 +8,7 @@ import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColu
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
+import { normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 export interface BuiltCreateTableStatement {
@@ -23,6 +24,9 @@ export interface BuiltCreateUniqueIndexStatement {
   readonly sql: string;
 }
 export interface BuiltDropIndexStatement {
+  readonly sql: string;
+}
+export interface BuiltDropViewStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableAddColumnStatement {
@@ -131,6 +135,14 @@ export function buildDropIndexStatement(input: DropIndexInput): BuiltDropIndexSt
   const normalized = normalizeDropIndexInput(input);
   return Object.freeze({
     sql: `DROP INDEX ${escapeIdentifier(normalized.index)} ON ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)}`,
+  });
+}
+
+/** Produces the sole canonical SQL representation for the supported DROP VIEW input. */
+export function buildDropViewStatement(input: DropViewInput): BuiltDropViewStatement {
+  const normalized = normalizeDropViewInput(input);
+  return Object.freeze({
+    sql: `DROP VIEW ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.view)}`,
   });
 }
 

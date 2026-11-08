@@ -14,7 +14,10 @@ interface JsonRpcResponse {
 
 function createApplication(execute?: (...args: unknown[]) => Promise<unknown>, ddlEnabled = true, query?: (...args: unknown[]) => Promise<unknown>) {
   return createMcpApplication({
-    environment: validEnvironment({ MYSQL_DDL_ENABLED: ddlEnabled ? 'true' : 'false' }),
+    environment: validEnvironment({
+      MYSQL_DDL_ENABLED: ddlEnabled ? 'true' : 'false',
+      MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: ddlEnabled ? 'true' : 'false',
+    }),
     driver: {
       createPool() {
         return {
@@ -107,6 +110,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
           name === 'create_index' ||
           name === 'create_unique_index' ||
           name === 'drop_index' ||
+          name === 'drop_view' ||
           name === 'alter_table_add_column' ||
           name === 'alter_table_add_foreign_key' ||
           name === 'alter_table_modify_column' ||
@@ -140,6 +144,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       openWorldHint: true,
     });
     assert.deepEqual(enabledTools.find(({ name }) => name === 'drop_index')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'drop_view')?.annotations, {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
@@ -194,6 +204,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
             name !== 'create_index' &&
             name !== 'create_unique_index' &&
             name !== 'drop_index' &&
+            name !== 'drop_view' &&
             name !== 'alter_table_add_column' &&
             name !== 'alter_table_add_foreign_key' &&
             name !== 'alter_table_drop_foreign_key' &&

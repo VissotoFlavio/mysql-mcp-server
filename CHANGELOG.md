@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [#84 — feat: add controlled `drop_view`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/84)
+
 ## 0.13.0 - 2026-11-08
 
 - [#83 — feat: add controlled projection-only `create_view`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/83)
