@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-11-08
 
 - [#84 — feat: add controlled `drop_view`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/84)
 
