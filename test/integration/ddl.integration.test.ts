@@ -12,6 +12,7 @@ const enabled =
   process.env.MYSQL_INTEGRATION_TEST === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_TEST === 'true' &&
   process.env.MYSQL_DDL_ENABLED === 'true' &&
+  process.env.MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE === 'true' &&
   process.env.MYSQL_DML_ENABLED === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_CONFIRM === 'isolated-database-schema';
 const schema = process.env.MYSQL_INTEGRATION_SCHEMA ?? process.env.MYSQL_DATABASE;

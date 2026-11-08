@@ -92,9 +92,9 @@ The bounded preflight confirms the target is absent, the source is an accessible
 
 ### Controlled view removal
 
-`drop_view` is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit confirmation for exactly `{ schema, view, reason, confirmation: "DROP_VIEW" }` after reviewing the view's consumers. It accepts one existing `VIEW` only and emits the canonical `DROP VIEW` form internally; SQL, `IF EXISTS`, `CASCADE`, and multiple targets are unavailable.
+`drop_view` is advertised only with `MYSQL_DDL_ENABLED=true`; set `MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE=true` only when the account can see all possible dependent views and referenced objects in the relevant schemas. Obtain explicit confirmation for exactly `{ schema, view, reason, confirmation: "DROP_VIEW" }` after reviewing the view's consumers. It accepts one existing `VIEW` only and emits the canonical `DROP VIEW` form internally; SQL, `IF EXISTS`, `CASCADE`, and multiple targets are unavailable.
 
-The preflight checks `information_schema.TABLES` for the exact view and `information_schema.VIEW_TABLE_USAGE` for known dependent views. Any known dependent view, malformed metadata, or unavailable dependency metadata is rejected before execution; no dependent object is removed automatically. The account needs metadata `SELECT` and `DROP` on the target view. Success verifies the view is absent through discovery and returns only the target and operation metadata. Permission, type, metadata, structure, lock/deadlock, and indeterminate outcomes are sanitized; never retry an indeterminate result without a new operator decision.
+The preflight checks `information_schema.TABLES` for the exact view and `information_schema.VIEW_TABLE_USAGE` for known dependent views. MySQL exposes only metadata for objects on which the account has privileges, so the explicit metadata-completeness flag is required and must be backed by an account with visibility across every relevant schema; without it the tool rejects the request before any DDL. `VIEW_TABLE_USAGE` is available from MySQL 8.0.13; older servers fail closed. Any known dependent view, malformed metadata, or unavailable dependency metadata is rejected before execution; no dependent object is removed automatically. The account needs metadata `SELECT` across relevant views/tables and `DROP` on the target view. Success verifies the view is absent through discovery and returns only the target and operation metadata. The preflight is not a lock against concurrent DDL, so run the operation during a controlled maintenance window and verify consumers afterward. Permission, type, metadata, structure, lock/deadlock, and indeterminate outcomes are sanitized; never retry an indeterminate result without a new operator decision.
 
 ### Controlled index creation
 
@@ -146,6 +146,7 @@ $env:MYSQL_INTEGRATION_TEST = 'true'
 $env:MYSQL_DDL_INTEGRATION_TEST = 'true'
 $env:MYSQL_DML_ENABLED = 'true'
 $env:MYSQL_DDL_ENABLED = 'true'
+$env:MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE = 'true'
 $env:MYSQL_DDL_INTEGRATION_CONFIRM = 'isolated-database-schema'
 $env:MYSQL_DDL_INTEGRATION_TABLE = 'mcp_ddl_test_synthetic'
 npm run test:integration

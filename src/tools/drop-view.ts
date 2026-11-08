@@ -1,7 +1,7 @@
 import type { McpServer, StandardSchemaWithJSON } from '@modelcontextprotocol/server';
 
 import { toSafeDdlOutcome } from '../db/ddl-audit.js';
-import { validateDropViewMetadata, verifyDropViewMetadata } from '../db/metadata.js';
+import { DropViewMetadataError, validateDropViewMetadata, verifyDropViewMetadata } from '../db/metadata.js';
 import { createDropViewStatement, DdlResultError, type ConnectionLayerBundle, wasDdlSubmitted } from '../db/pool.js';
 
 import { DROP_VIEW_CONFIRMATION, dropViewInputJsonSchema, normalizeDropViewInput, type DropViewInput } from './drop-view-input.js';
@@ -146,6 +146,11 @@ export function registerDropViewTool(server: McpServer, mysql: ConnectionLayerBu
     async (input) => {
       try {
         const normalized = normalizeDropViewInput(input);
+        if (!mysql.dropViewMetadataComplete)
+          throw new DropViewMetadataError(
+            'MYSQL_DDL_METADATA_INVALID',
+            'DROP VIEW metadata visibility must be explicitly confirmed by the operator.',
+          );
         await validateDropViewMetadata(mysql, normalized.schema, normalized.view);
         const [result, operationId] = await mysql.ddl.executeDropViewWithOperationId(createDropViewStatement(normalized), async () => {
           try {

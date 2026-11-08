@@ -42,7 +42,7 @@ test('drop_view is DDL-gated, dependency-aware, canonical, verified, and sanitiz
   let executed = false;
   let executeCalls = 0;
   const application = createMcpApplication({
-    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'true' }),
     driver: {
       createPool: () =>
         ({
@@ -85,7 +85,7 @@ test('drop_view is DDL-gated, dependency-aware, canonical, verified, and sanitiz
 test('rejects an unconfirmed or dependent drop_view without executing DDL', async () => {
   let executeCalls = 0;
   const application = createMcpApplication({
-    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'true' }),
     driver: {
       createPool: () =>
         ({
@@ -109,6 +109,34 @@ test('rejects an unconfirmed or dependent drop_view without executing DDL', asyn
       arguments: { schema: 'app', view: 'account_labels', reason: 'Remove it.', confirmation: 'DROP_VIEW' },
     });
     assert.equal((dependent.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
+    assert.equal(executeCalls, 0);
+  } finally {
+    await application.close();
+  }
+});
+
+test('fails closed when metadata completeness is not explicitly attested', async () => {
+  let executeCalls = 0;
+  const application = createMcpApplication({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true' }),
+    driver: {
+      createPool: () =>
+        ({
+          async query() {
+            return [[{ schemaName: 'app', tableName: 'account_labels', tableType: 'VIEW' }], []];
+          },
+          async execute() {
+            executeCalls += 1;
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        }) as never,
+    },
+  });
+  const client = await connect(application);
+  try {
+    const listed = (await client.request('tools/list', {})).result?.tools as readonly { name: string }[];
+    assert.ok(!listed.some(({ name }) => name === 'drop_view'));
     assert.equal(executeCalls, 0);
   } finally {
     await application.close();

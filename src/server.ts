@@ -72,7 +72,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerCreateIndexTool(server, mysql);
     registerCreateUniqueIndexTool(server, mysql);
     registerDropIndexTool(server, mysql);
-    registerDropViewTool(server, mysql);
+    if (mysql.dropViewMetadataComplete) registerDropViewTool(server, mysql);
     registerAlterTableAddColumnTool(server, mysql);
     registerAlterTableAddForeignKeyTool(server, mysql);
     registerAlterTableDropForeignKeyTool(server, mysql);

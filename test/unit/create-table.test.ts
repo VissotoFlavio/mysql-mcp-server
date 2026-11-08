@@ -14,7 +14,10 @@ interface JsonRpcResponse {
 
 function createApplication(execute?: (...args: unknown[]) => Promise<unknown>, ddlEnabled = true, query?: (...args: unknown[]) => Promise<unknown>) {
   return createMcpApplication({
-    environment: validEnvironment({ MYSQL_DDL_ENABLED: ddlEnabled ? 'true' : 'false' }),
+    environment: validEnvironment({
+      MYSQL_DDL_ENABLED: ddlEnabled ? 'true' : 'false',
+      MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: ddlEnabled ? 'true' : 'false',
+    }),
     driver: {
       createPool() {
         return {

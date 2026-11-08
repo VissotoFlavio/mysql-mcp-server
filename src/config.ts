@@ -27,6 +27,7 @@ export interface ConnectionConfig {
   readonly password: string;
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
+  readonly dropViewMetadataComplete: boolean;
   readonly poolLimit: number;
   readonly queueLimit: number;
   readonly connectTimeoutMs: number;
@@ -212,6 +213,7 @@ export function loadConnectionConfig(
     password: requiredValue(environment, 'MYSQL_PASSWORD', true),
     dmlEnabled: booleanValue(environment, 'MYSQL_DML_ENABLED', false),
     ddlEnabled: strictBooleanValue(environment, 'MYSQL_DDL_ENABLED', false),
+    dropViewMetadataComplete: strictBooleanValue(environment, 'MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE', false),
     poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
     queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),
     connectTimeoutMs: integerValue(environment, 'MYSQL_CONNECT_TIMEOUT_MS', DEFAULTS.connectTimeoutMs, { min: 100, max: 60_000 }),
