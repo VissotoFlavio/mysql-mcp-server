@@ -35,10 +35,12 @@ test('creates an MCP stdio server and retains ownership of the database pool lif
 });
 
 test('exposes DML and DDL opt-in state through application composition', async () => {
-  for (const [override, expectedDml, expectedDdl] of [
-    [{}, false, false],
-    [{ MYSQL_DML_ENABLED: 'false', MYSQL_DDL_ENABLED: 'false' }, false, false],
-    [{ MYSQL_DML_ENABLED: 'true', MYSQL_DDL_ENABLED: 'true' }, true, true],
+  for (const [override, expectedDml, expectedDdl, expectedCreateSchema] of [
+    [{}, false, false, false],
+    [{ MYSQL_DML_ENABLED: 'false', MYSQL_DDL_ENABLED: 'false' }, false, false, false],
+    [{ MYSQL_DML_ENABLED: 'true', MYSQL_DDL_ENABLED: 'true' }, true, true, false],
+    [{ MYSQL_DDL_ENABLED: 'false', MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'true' }, false, false, false],
+    [{ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'true' }, false, true, true],
   ] as const) {
     const application = createMcpApplication({
       environment: validEnvironment(override),
@@ -56,6 +58,7 @@ test('exposes DML and DDL opt-in state through application composition', async (
 
     assert.equal(application.mysql.dmlEnabled, expectedDml);
     assert.equal(application.mysql.ddlEnabled, expectedDdl);
+    assert.equal(application.mysql.createSchemaEnabled, expectedCreateSchema);
     await application.close();
   }
 });

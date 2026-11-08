@@ -55,6 +55,24 @@ The MCP layer validates identifiers, columns, filters, bounds, and payloads. MyS
 
 ## Controlled DDL workflow
 
+### Controlled schema creation
+
+`create_schema` is advertised only when both `MYSQL_DDL_ENABLED=true` and `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true`. Obtain explicit confirmation for exactly `{ schema, charset?, collation?, reason }`; the target must be absent and may differ from `MYSQL_DATABASE`, which remains the connection context.
+
+```json
+{
+  "name": "create_schema",
+  "arguments": {
+    "schema": "mcp_ddl_test_catalog",
+    "charset": "utf8mb4",
+    "collation": "utf8mb4_0900_ai_ci",
+    "reason": "Create an isolated integration catalog"
+  }
+}
+```
+
+Only the internally built one-statement `CREATE SCHEMA` form is available. `IF NOT EXISTS`, SQL, expressions, quoted identifiers, tables, grants, users, roles, and arbitrary options are rejected. A bounded `information_schema.SCHEMATA` absence preflight runs before capability-bound DDL execution. The account needs metadata visibility plus `CREATE` privilege covering the target database; depending on the server's grant setup, that may be a global or database-level grant, so confirm the exact scope with the DBA and do not grant `CREATE USER`, `GRANT OPTION`, or broader administrative privileges. Success returns only sanitized target metadata, operation ID, and warnings. Conflict, permission, metadata, structural, lock/deadlock, and indeterminate outcomes are sanitized; verify state before a new operator-approved request after an indeterminate outcome and never retry automatically. After success, verify the schema with discovery and remove it only through an explicitly confirmed, isolated cleanup workflow.
+
 `create_table` is advertised only when `MYSQL_DDL_ENABLED=true`. Its presence is a capability boundary, not blanket permission to change a schema. Before calling it, discover the accessible schema, state the exact structured definition and audit reason, and obtain the operator's explicit confirmation for that specific table.
 
 ```json
@@ -153,6 +171,8 @@ npm run test:integration
 ```
 
 The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
+
+The separate `create_schema` integration owner is skipped unless it receives a separate explicit authorization: `MYSQL_DDL_CREATE_SCHEMA_INTEGRATION_TEST=true`, `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true`, `MYSQL_DDL_CREATE_SCHEMA_INTEGRATION_CONFIRM=isolated-schema-create-drop`, and the derived target begins with `mcp_ddl_test_`. The generic DDL table confirmation above intentionally does not activate it. This test creates and drops one schema distinct from `MYSQL_DATABASE` and removes only that exact derived target during cleanup. Do not provide these values or run it without explicit authorization for that isolated schema lifecycle.
 
 The rename integration contract is a separate owner in [`test/integration/rename-table.integration.test.ts`](../test/integration/rename-table.integration.test.ts). It derives a source ending in `_rt` and a destination ending in `_rt_r` from `MYSQL_DDL_INTEGRATION_TABLE`, first verifies both names are absent, then creates, renames, describes, and cleans up only those names. It runs under the same opt-in and isolated-schema guard, and is included by `npm run test:integration`; never point either DDL fixture at shared or production data.
 
