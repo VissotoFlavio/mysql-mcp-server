@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 - 2026-11-08
 
 - [#83 — feat: add controlled projection-only `create_view`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/83)
 
