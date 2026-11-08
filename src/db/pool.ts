@@ -10,6 +10,7 @@ import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput 
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
+import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
@@ -22,6 +23,7 @@ import {
   buildAlterTableRenameColumnStatement,
   buildCreateIndexStatement,
   buildCreateTableStatement,
+  buildCreateViewStatement,
   buildCreateUniqueIndexStatement,
   buildDropIndexStatement,
   buildAlterTableDropForeignKeyStatement,
@@ -49,6 +51,7 @@ import {
   assertDropIndexSql,
   assertAlterTableDropForeignKeySql,
   assertCreateTableSql,
+  assertCreateViewSql,
   assertRenameTableSql,
   assertDmlSql,
   DdlPolicyError,
@@ -341,6 +344,7 @@ function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult
 
 declare const dmlStatementBrand: unique symbol;
 declare const createTableStatementBrand: unique symbol;
+declare const createViewStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
 declare const dropIndexStatementBrand: unique symbol;
@@ -357,6 +361,9 @@ export interface DmlStatement {
 
 export interface CreateTableStatement {
   readonly [createTableStatementBrand]: true;
+}
+export interface CreateViewStatement {
+  readonly [createViewStatementBrand]: true;
 }
 export interface CreateIndexStatement {
   readonly [createIndexStatementBrand]: true;
@@ -394,6 +401,8 @@ export interface DmlConnectionLayer {
 export interface DdlConnectionLayer {
   executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult>;
   executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeCreateView(statement: CreateViewStatement): Promise<CreateTableExecutionResult>;
+  executeCreateViewWithOperationId(statement: CreateViewStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeCreateIndex(statement: CreateIndexStatement): Promise<CreateTableExecutionResult>;
   executeCreateIndexWithOperationId(statement: CreateIndexStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeCreateUniqueIndex(statement: CreateUniqueIndexStatement): Promise<CreateTableExecutionResult>;
@@ -449,6 +458,7 @@ interface DmlStatementData {
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
 type DdlStatement =
   | CreateTableStatement
+  | CreateViewStatement
   | CreateIndexStatement
   | CreateUniqueIndexStatement
   | DropIndexStatement
@@ -460,6 +470,7 @@ type DdlStatement =
   | RenameTableStatement;
 type DdlStatementData =
   | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
+  | Readonly<{ operation: 'create_view'; sql: string; input: CreateViewInput }>
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
   | Readonly<{ operation: 'drop_index'; sql: string; input: DropIndexInput }>
@@ -483,6 +494,21 @@ export function createCreateTableStatement(input: CreateTableInput): CreateTable
   }
   const statement = Object.freeze({}) as CreateTableStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_table', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound projection-only CREATE VIEW statement. */
+export function createCreateViewStatement(input: CreateViewInput): CreateViewStatement {
+  let sql: string;
+  let normalized: CreateViewInput;
+  try {
+    normalized = normalizeCreateViewInput(input);
+    sql = buildCreateViewStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as CreateViewStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_view', sql, input: normalized }));
   return statement;
 }
 
@@ -913,6 +939,7 @@ export function createConnectionLayer({
       if (!config.ddlEnabled) throw new DdlDisabledError();
       if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
       if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
+      else if (statementData.operation === 'create_view') assertCreateViewSql(statementData.sql);
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
       else if (statementData.operation === 'drop_index') assertDropIndexSql(statementData.sql);
@@ -947,6 +974,11 @@ export function createConnectionLayer({
       return result;
     },
     executeCreateTableWithOperationId: (statement: CreateTableStatement) => executeDdlWithOperationId(statement, 'create_table'),
+    async executeCreateView(statement: CreateViewStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'create_view');
+      return result;
+    },
+    executeCreateViewWithOperationId: (statement: CreateViewStatement) => executeDdlWithOperationId(statement, 'create_view'),
     async executeCreateIndex(statement: CreateIndexStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'create_index');
       return result;

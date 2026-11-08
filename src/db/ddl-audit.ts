@@ -28,6 +28,7 @@ import {
 import { CreateIndexInputValidationError, normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { CreateTableInputValidationError, normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
+import { CreateViewInputValidationError, normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { DropIndexInputValidationError, normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
 import { RenameTableInputValidationError, normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
@@ -39,6 +40,7 @@ import {
   DropIndexVerificationError,
   RenameTableMetadataError,
   AlterTableDropForeignKeyMetadataError,
+  CreateViewMetadataError,
 } from './metadata.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
@@ -46,6 +48,7 @@ import { DdlPolicyError } from './sql-policy.js';
 export type DdlAuditResult = 'succeeded' | 'rejected' | 'failed' | 'indeterminate';
 export type DdlAuditOperation =
   | 'create_table'
+  | 'create_view'
   | 'create_index'
   | 'create_unique_index'
   | 'drop_index'
@@ -84,12 +87,14 @@ export interface DdlAuditEvent {
   readonly operation: DdlAuditOperation;
   readonly target: Readonly<{
     schema: string;
-    table: string;
+    table?: string;
     index?: string;
     constraint?: string;
     column?: string;
     newColumn?: string;
     newTable?: string;
+    view?: string;
+    sourceTable?: string;
   }>;
   readonly reason: string;
   readonly columnCount: number | null;
@@ -119,6 +124,7 @@ type NormalizedRequest = Readonly<{
   operation: DdlAuditOperation;
   input:
     | CreateTableInput
+    | CreateViewInput
     | CreateIndexInput
     | CreateUniqueIndexInput
     | DropIndexInput
@@ -175,6 +181,13 @@ function hasSafeCode(value: unknown, code: string): boolean {
   }
 }
 function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperation): NormalizedRequest {
+  if (expectedOperation === 'create_view') {
+    try {
+      return Object.freeze({ operation: 'create_view', input: normalizeCreateViewInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
   if (expectedOperation === 'create_unique_index') {
     try {
       return Object.freeze({ operation: 'create_unique_index', input: normalizeCreateUniqueIndexInput(request) });
@@ -212,6 +225,11 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   }
   try {
     return Object.freeze({ operation: 'create_table', input: normalizeCreateTableInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'create_view', input: normalizeCreateViewInput(request) });
   } catch {
     /* try the other supported DDL contract */
   }
@@ -266,7 +284,10 @@ function canonicalRequest(request: NormalizedRequest): object {
   const inputWithColumns = input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput;
   return {
     operation: request.operation,
-    target: { schema: input.schema, table: input.table },
+    target:
+      request.operation === 'create_view'
+        ? { schema: input.schema, view: (input as CreateViewInput).view, sourceTable: (input as CreateViewInput).definition.table }
+        : { schema: input.schema, table: (input as { table: string }).table },
     reason: input.reason,
     ...(request.operation === 'alter_table_add_column'
       ? { column: (input as AlterTableAddColumnInput).column }
@@ -293,11 +314,14 @@ function canonicalRequest(request: NormalizedRequest): object {
                 : request.operation === 'drop_index'
                   ? { index: (input as DropIndexInput).index }
                   : {
-                      columns: inputWithColumns.columns.map((column) =>
-                        typeof column === 'string'
-                          ? column
-                          : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-                      ),
+                      columns:
+                        request.operation === 'create_view'
+                          ? (input as CreateViewInput).definition.columns
+                          : inputWithColumns.columns.map((column) =>
+                              typeof column === 'string'
+                                ? column
+                                : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+                            ),
                     }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
@@ -313,6 +337,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
   try {
     if (
       safeInstanceOf(error, CreateTableInputValidationError) ||
+      safeInstanceOf(error, CreateViewInputValidationError) ||
       safeInstanceOf(error, CreateIndexInputValidationError) ||
       safeInstanceOf(error, DropIndexInputValidationError) ||
       safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
@@ -352,6 +377,17 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
           ? OUTCOMES.tableInvalid
           : OUTCOMES.tableExists;
     }
+    if (safeInstanceOf(error, CreateViewMetadataError)) {
+      const code = (error as CreateViewMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : code === 'MYSQL_DDL_TABLE_EXISTS'
+            ? OUTCOMES.tableExists
+            : OUTCOMES.structure;
+    }
+    if (hasSafeCode(error, 'MYSQL_DDL_TABLE_EXISTS')) return OUTCOMES.tableExists;
     if (safeInstanceOf(error, AlterTableDropForeignKeyMetadataError)) {
       const code = (error as AlterTableDropForeignKeyMetadataError).code;
       return code === 'MYSQL_DDL_METADATA_INVALID'
@@ -411,33 +447,45 @@ function baseEvent(
       input === null
         ? Object.freeze({ schema: '[invalid]', table: '[invalid]' })
         : Object.freeze(
-            normalized.operation === 'create_index' || normalized.operation === 'create_unique_index' || normalized.operation === 'drop_index'
-              ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput | CreateUniqueIndexInput | DropIndexInput).index }
-              : normalized.operation === 'rename_table'
-                ? { schema: input.schema, table: input.table, newTable: (input as RenameTableInput).newTable }
-                : normalized.operation === 'alter_table_drop_foreign_key'
-                  ? { schema: input.schema, table: input.table, constraint: (input as AlterTableDropForeignKeyInput).constraint }
-                  : normalized.operation === 'alter_table_modify_column'
-                    ? { schema: input.schema, table: input.table, column: (input as AlterTableModifyColumnInput).column }
-                    : { schema: input.schema, table: input.table },
+            normalized.operation === 'create_view'
+              ? { schema: input.schema, view: (input as CreateViewInput).view, sourceTable: (input as CreateViewInput).definition.table }
+              : normalized.operation === 'create_index' || normalized.operation === 'create_unique_index' || normalized.operation === 'drop_index'
+                ? {
+                    schema: input.schema,
+                    table: (input as { table: string }).table,
+                    index: (input as CreateIndexInput | CreateUniqueIndexInput | DropIndexInput).index,
+                  }
+                : normalized.operation === 'rename_table'
+                  ? { schema: input.schema, table: (input as { table: string }).table, newTable: (input as RenameTableInput).newTable }
+                  : normalized.operation === 'alter_table_drop_foreign_key'
+                    ? {
+                        schema: input.schema,
+                        table: (input as { table: string }).table,
+                        constraint: (input as AlterTableDropForeignKeyInput).constraint,
+                      }
+                    : normalized.operation === 'alter_table_modify_column'
+                      ? { schema: input.schema, table: (input as { table: string }).table, column: (input as AlterTableModifyColumnInput).column }
+                      : { schema: input.schema, table: (input as { table: string }).table },
           ),
     reason: input?.reason ?? '[invalid]',
     columnCount:
       input === null
         ? null
-        : normalized.operation === 'alter_table_add_column'
-          ? 1
-          : normalized.operation === 'alter_table_rename_column'
+        : normalized.operation === 'create_view'
+          ? (input as CreateViewInput).definition.columns.length
+          : normalized.operation === 'alter_table_add_column'
             ? 1
-            : normalized.operation === 'alter_table_modify_column'
+            : normalized.operation === 'alter_table_rename_column'
               ? 1
-              : normalized.operation === 'rename_table'
-                ? null
-                : normalized.operation === 'drop_index'
+              : normalized.operation === 'alter_table_modify_column'
+                ? 1
+                : normalized.operation === 'rename_table'
                   ? null
-                  : normalized.operation === 'alter_table_drop_foreign_key'
+                  : normalized.operation === 'drop_index'
                     ? null
-                    : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
+                    : normalized.operation === 'alter_table_drop_foreign_key'
+                      ? null
+                      : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };

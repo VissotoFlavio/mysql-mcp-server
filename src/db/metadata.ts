@@ -97,6 +97,21 @@ const VALIDATE_CREATE_INDEX_METADATA_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_CREATE_VIEW_TABLES_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (?, ?)
+  ORDER BY TABLE_NAME ASC
+  LIMIT 3
+`;
+const VALIDATE_CREATE_VIEW_COLUMNS_SQL = `
+  SELECT COLUMN_NAME AS columnName, ORDINAL_POSITION AS ordinalPosition, EXTRA AS extra
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+
 const VALIDATE_ALTER_TABLE_ADD_COLUMN_METADATA_SQL = `
   SELECT
     tables.TABLE_SCHEMA AS schemaName,
@@ -320,6 +335,11 @@ interface CreateIndexMetadataRow extends RowDataPacket {
   readonly ordinalPosition: number;
   readonly extra: string;
 }
+interface CreateViewColumnRow extends RowDataPacket {
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+  readonly extra: string;
+}
 
 interface CreateIndexStatisticRow extends RowDataPacket {
   readonly schemaName: string;
@@ -499,6 +519,16 @@ export class CreateUniqueIndexMetadataError extends Error {
     this.code = code;
   }
 }
+export type CreateViewMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID' | 'MYSQL_DDL_TABLE_EXISTS';
+export class CreateViewMetadataError extends Error {
+  constructor(
+    readonly code: CreateViewMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CreateViewMetadataError';
+  }
+}
 
 export type DropIndexMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
 export class DropIndexMetadataError extends Error {
@@ -600,6 +630,10 @@ const CREATE_INDEX_METADATA_COLUMN_INVALID = 'One or more supplied index columns
 const CREATE_INDEX_METADATA_EXISTS = 'The requested index name or definition already exists.';
 const CREATE_UNIQUE_INDEX_METADATA_EXISTS = 'The requested index name, primary key, or unique definition already exists.';
 const CREATE_UNIQUE_INDEX_DUPLICATE_DATA = 'The requested unique index cannot be created because duplicate non-null tuples exist.';
+const CREATE_VIEW_METADATA_UNAVAILABLE = 'Unable to validate the requested view metadata.';
+const CREATE_VIEW_METADATA_SOURCE_INVALID = 'The source must be an existing base table.';
+const CREATE_VIEW_METADATA_COLUMN_INVALID = 'One or more view columns are unknown or invisible.';
+const CREATE_VIEW_METADATA_EXISTS = 'The target view already exists.';
 const DROP_INDEX_METADATA_UNAVAILABLE = 'Unable to validate the requested index metadata.';
 const DROP_INDEX_METADATA_BASE_TABLE_ONLY = 'DROP INDEX metadata is supported for base tables only.';
 const DROP_INDEX_METADATA_NOT_REMOVABLE = 'The named index is not a removable secondary index.';
@@ -985,6 +1019,63 @@ export async function validateCreateIndexMetadata(
   requestedColumns: readonly string[],
 ): Promise<void> {
   return validateIndexMetadata(mysql, schema, table, index, requestedColumns, false);
+}
+
+/** @internal Preflights the target, one base-table source, and requested visible projection columns. */
+export async function validateCreateViewMetadata(
+  mysql: ConnectionLayer,
+  schema: string,
+  view: string,
+  table: string,
+  requestedColumns: readonly string[],
+): Promise<void> {
+  let tables: TableRow[];
+  let columns: CreateViewColumnRow[];
+  try {
+    [tables] = await mysql.query<TableRow[]>(queryOptions(mysql, VALIDATE_CREATE_VIEW_TABLES_SQL), [schema, view, table]);
+    [columns] = await mysql.query<CreateViewColumnRow[]>(queryOptions(mysql, VALIDATE_CREATE_VIEW_COLUMNS_SQL), [
+      schema,
+      table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
+  }
+  if (!Array.isArray(tables) || tables.length > 2 || !Array.isArray(columns) || columns.length === 0 || columns.length > MAX_METADATA_RESULTS)
+    throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
+  let source: TableRow | undefined;
+  for (const row of tables) {
+    if (!row || row.schemaName !== schema || !isNonEmptyString(row.tableName) || !isNonEmptyString(row.tableType))
+      throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
+    if (row.tableName === view) throw new CreateViewMetadataError('MYSQL_DDL_TABLE_EXISTS', CREATE_VIEW_METADATA_EXISTS);
+    if (row.tableName !== table || source !== undefined)
+      throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
+    source = row;
+  }
+  if (source === undefined || source.tableType !== 'BASE TABLE')
+    throw new CreateViewMetadataError('MYSQL_DDL_TABLE_INVALID', CREATE_VIEW_METADATA_SOURCE_INVALID);
+  const names = new Set<string>();
+  const visibleNames = new Set<string>();
+  const ordinals = new Set<number>();
+  for (const column of columns) {
+    if (
+      !column ||
+      !isNonEmptyString(column.columnName) ||
+      !Number.isInteger(column.ordinalPosition) ||
+      column.ordinalPosition <= 0 ||
+      typeof column.extra !== 'string' ||
+      names.has(column.columnName) ||
+      ordinals.has(column.ordinalPosition)
+    )
+      throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
+    names.add(column.columnName);
+    if (!/(^|\s)invisible(?=\s|$)/iu.test(column.extra)) visibleNames.add(column.columnName);
+    ordinals.add(column.ordinalPosition);
+  }
+  if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1))
+    throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
+  if (requestedColumns.some((column) => !visibleNames.has(column)))
+    throw new CreateViewMetadataError('MYSQL_DDL_COLUMN_INVALID', CREATE_VIEW_METADATA_COLUMN_INVALID);
 }
 
 /** @internal Reads bounded metadata and duplicate existence before one CREATE UNIQUE INDEX attempt. */

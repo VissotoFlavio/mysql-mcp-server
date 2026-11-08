@@ -6,10 +6,14 @@ import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput 
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
+import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 export interface BuiltCreateTableStatement {
+  readonly sql: string;
+}
+export interface BuiltCreateViewStatement {
   readonly sql: string;
 }
 export interface BuiltCreateIndexStatement {
@@ -96,6 +100,14 @@ export function buildCreateTableStatement(input: CreateTableInput): BuiltCreateT
   const primaryKey = normalized.primaryKey.map(escapeIdentifier).join(', ');
   const sql = `CREATE TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${[...columns, `PRIMARY KEY (${primaryKey})`].join(', ')})`;
   return Object.freeze({ sql });
+}
+
+/** Produces the only supported view form: a same-schema, plain named-column projection. */
+export function buildCreateViewStatement(input: CreateViewInput): BuiltCreateViewStatement {
+  const normalized = normalizeCreateViewInput(input);
+  return Object.freeze({
+    sql: `CREATE SQL SECURITY INVOKER VIEW ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.view)} AS SELECT ${normalized.definition.columns.map(escapeIdentifier).join(', ')} FROM ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.definition.table)}`,
+  });
 }
 
 /** Produces the sole canonical SQL representation for the supported CREATE INDEX input. */

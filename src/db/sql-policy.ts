@@ -3,6 +3,7 @@ import sqlParser from 'node-sql-parser';
 import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
 import { MAX_CREATE_INDEX_COLUMNS } from '../tools/create-index-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH } from '../tools/create-table-input.js';
+import { MAX_CREATE_VIEW_COLUMNS } from '../tools/create-view-input.js';
 
 const { Parser } = sqlParser;
 const parser = new Parser();
@@ -323,6 +324,34 @@ export function assertCreateTableSql(sql: string): void {
   ) {
     failDdlPolicy();
   }
+}
+
+/** Defense in depth for the canonical projection-only, invoker-security CREATE VIEW grammar. */
+export function assertCreateViewSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'CREATE SQL SECURITY INVOKER VIEW ');
+  const [schema, afterSchema] = readIdentifier(sql, index);
+  index = afterSchema;
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' AS SELECT ');
+  const columns = new Set<string>();
+  while (true) {
+    const [column, afterColumn] = readIdentifier(sql, index);
+    if (columns.has(column) || columns.size >= MAX_CREATE_VIEW_COLUMNS) failDdlPolicy();
+    columns.add(column);
+    index = afterColumn;
+    if (sql.startsWith(' FROM ', index)) break;
+    index = readExpected(sql, index, ', ');
+  }
+  if (columns.size === 0) failDdlPolicy();
+  index = readExpected(sql, index, ' FROM ');
+  const [sourceSchema, afterSourceSchema] = readIdentifier(sql, index);
+  if (sourceSchema !== schema) failDdlPolicy();
+  index = afterSourceSchema;
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  if (index !== sql.length) failDdlPolicy();
 }
 
 /** Defense in depth for the canonical, plain non-unique B-tree CREATE INDEX grammar. */

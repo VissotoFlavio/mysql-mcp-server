@@ -103,6 +103,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       disabledTools.some(
         ({ name }) =>
           name === 'create_table' ||
+          name === 'create_view' ||
           name === 'create_index' ||
           name === 'create_unique_index' ||
           name === 'drop_index' ||
@@ -115,6 +116,12 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
       false,
     );
     assert.deepEqual(enabledTools.find(({ name }) => name === 'create_table')?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+    assert.deepEqual(enabledTools.find(({ name }) => name === 'create_view')?.annotations, {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
@@ -183,6 +190,7 @@ test('registers controlled DDL tools only with the DDL opt-in and preserves the 
         .filter(
           ({ name }) =>
             name !== 'create_table' &&
+            name !== 'create_view' &&
             name !== 'create_index' &&
             name !== 'create_unique_index' &&
             name !== 'drop_index' &&
