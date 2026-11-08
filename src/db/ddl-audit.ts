@@ -164,9 +164,11 @@ const OUTCOMES = {
   columnExists: { result: 'failed', code: 'MYSQL_DDL_COLUMN_EXISTS', message: 'The requested column already exists.' },
   metadata: { result: 'failed', code: 'MYSQL_DDL_METADATA_INVALID', message: 'Unable to validate the requested table metadata.' },
   tableInvalid: { result: 'failed', code: 'MYSQL_DDL_TABLE_INVALID', message: 'The source must be an existing base table.' },
+  viewInvalid: { result: 'failed', code: 'MYSQL_DDL_TABLE_INVALID', message: 'The target must be an existing view.' },
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
   structure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'MySQL rejected the table structure.' },
+  viewStructure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'The target view has known dependent views.' },
 } as const satisfies Record<string, SafeDdlOutcome>;
 
 function safeInstanceOf(value: unknown, constructor: { [Symbol.hasInstance](value: unknown): boolean }): boolean {
@@ -389,8 +391,8 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       return code === 'MYSQL_DDL_METADATA_INVALID'
         ? OUTCOMES.metadata
         : code === 'MYSQL_DDL_TABLE_INVALID'
-          ? OUTCOMES.tableInvalid
-          : OUTCOMES.structure;
+          ? OUTCOMES.viewInvalid
+          : OUTCOMES.viewStructure;
     }
     if (safeInstanceOf(error, AlterTableModifyColumnMetadataError)) {
       const code = (error as AlterTableModifyColumnMetadataError).code;

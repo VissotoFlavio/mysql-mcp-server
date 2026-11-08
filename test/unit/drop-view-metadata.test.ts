@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { toSafeDdlOutcome } from '../../src/db/ddl-audit.js';
 import { DropViewMetadataError, validateDropViewMetadata } from '../../src/db/metadata.js';
 import type { ConnectionLayer } from '../../src/db/pool.js';
 
@@ -64,4 +65,17 @@ test('fails closed when dependency metadata is malformed or unavailable', async 
     ),
     'MYSQL_DDL_METADATA_INVALID',
   );
+});
+
+test('maps view-specific metadata failures to view-specific sanitized messages', () => {
+  assert.deepEqual(toSafeDdlOutcome(new DropViewMetadataError('MYSQL_DDL_TABLE_INVALID', 'internal')), {
+    result: 'failed',
+    code: 'MYSQL_DDL_TABLE_INVALID',
+    message: 'The target must be an existing view.',
+  });
+  assert.deepEqual(toSafeDdlOutcome(new DropViewMetadataError('MYSQL_DDL_STRUCTURE_INVALID', 'internal')), {
+    result: 'failed',
+    code: 'MYSQL_DDL_STRUCTURE_INVALID',
+    message: 'The target view has known dependent views.',
+  });
 });

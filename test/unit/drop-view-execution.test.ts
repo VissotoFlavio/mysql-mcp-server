@@ -108,7 +108,10 @@ test('rejects an unconfirmed or dependent drop_view without executing DDL', asyn
       name: 'drop_view',
       arguments: { schema: 'app', view: 'account_labels', reason: 'Remove it.', confirmation: 'DROP_VIEW' },
     });
-    assert.equal((dependent.result?.structuredContent as { code: string }).code, 'MYSQL_DDL_STRUCTURE_INVALID');
+    assert.deepEqual(dependent.result?.structuredContent, {
+      code: 'MYSQL_DDL_STRUCTURE_INVALID',
+      message: 'The target view has known dependent views.',
+    });
     assert.equal(executeCalls, 0);
   } finally {
     await application.close();
