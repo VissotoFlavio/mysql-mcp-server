@@ -266,6 +266,22 @@ const VALIDATE_DROP_INDEX_TABLE_SQL = `
   LIMIT 2
 `;
 
+const VALIDATE_DROP_VIEW_TABLE_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  LIMIT 2
+`;
+
+const VALIDATE_DROP_VIEW_DEPENDENCIES_SQL = `
+  SELECT VIEW_SCHEMA AS viewSchemaName, VIEW_NAME AS viewName,
+    TABLE_SCHEMA AS tableSchemaName, TABLE_NAME AS tableName
+  FROM information_schema.VIEW_TABLE_USAGE
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY VIEW_SCHEMA ASC, VIEW_NAME ASC
+  LIMIT ?
+`;
+
 const VALIDATE_DROP_INDEX_FOREIGN_KEYS_SQL = `
   SELECT CONSTRAINT_SCHEMA AS constraintSchemaName, TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName,
     CONSTRAINT_NAME AS constraintName, COLUMN_NAME AS columnName, ORDINAL_POSITION AS ordinalPosition,
@@ -360,6 +376,17 @@ interface DropIndexTableRow extends RowDataPacket {
   readonly schemaName: string;
   readonly tableName: string;
   readonly tableType: string;
+}
+interface DropViewTableRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly tableType: string;
+}
+interface DropViewDependencyRow extends RowDataPacket {
+  readonly viewSchemaName: string;
+  readonly viewName: string;
+  readonly tableSchemaName: string;
+  readonly tableName: string;
 }
 interface DropIndexForeignKeyRow extends RowDataPacket {
   readonly constraintSchemaName: string;
@@ -547,6 +574,23 @@ export class DropIndexVerificationError extends Error {
   }
 }
 
+export type DropViewMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
+export class DropViewMetadataError extends Error {
+  constructor(
+    readonly code: DropViewMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DropViewMetadataError';
+  }
+}
+export class DropViewVerificationError extends Error {
+  constructor() {
+    super('The dropped view could not be verified.');
+    this.name = 'DropViewVerificationError';
+  }
+}
+
 export type AlterTableAddColumnMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
 
 export class AlterTableAddColumnMetadataError extends Error {
@@ -637,6 +681,9 @@ const CREATE_VIEW_METADATA_EXISTS = 'The target view already exists.';
 const DROP_INDEX_METADATA_UNAVAILABLE = 'Unable to validate the requested index metadata.';
 const DROP_INDEX_METADATA_BASE_TABLE_ONLY = 'DROP INDEX metadata is supported for base tables only.';
 const DROP_INDEX_METADATA_NOT_REMOVABLE = 'The named index is not a removable secondary index.';
+const DROP_VIEW_METADATA_UNAVAILABLE = 'Unable to validate the requested view metadata.';
+const DROP_VIEW_METADATA_VIEW_ONLY = 'DROP VIEW is supported for existing views only.';
+const DROP_VIEW_METADATA_DEPENDENCIES = 'The requested view has known dependent views.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
@@ -1113,6 +1160,17 @@ function dropIndexMetadataError(code: DropIndexMetadataCode): DropIndexMetadataE
   );
 }
 
+function dropViewMetadataError(code: DropViewMetadataCode): DropViewMetadataError {
+  return new DropViewMetadataError(
+    code,
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? DROP_VIEW_METADATA_VIEW_ONLY
+      : code === 'MYSQL_DDL_STRUCTURE_INVALID'
+        ? DROP_VIEW_METADATA_DEPENDENCIES
+        : DROP_VIEW_METADATA_UNAVAILABLE,
+  );
+}
+
 function validateDropIndexStatisticRow(row: unknown, schema: string, table: string): row is DropIndexStatisticRow {
   if (typeof row !== 'object' || row === null) return false;
   const statistic = row as DropIndexStatisticRow;
@@ -1316,6 +1374,62 @@ export async function verifyDropIndexMetadata(mysql: ConnectionLayer, schema: st
   } catch (error) {
     if (error instanceof DropIndexVerificationError) throw error;
     throw new DropIndexVerificationError();
+  }
+}
+
+/** @internal Validates one existing view and rejects known dependent views before DROP VIEW. */
+export async function validateDropViewMetadata(mysql: ConnectionLayer, schema: string, view: string): Promise<void> {
+  let tables: DropViewTableRow[];
+  let dependencies: DropViewDependencyRow[];
+  try {
+    [tables] = await mysql.query<DropViewTableRow[]>(queryOptions(mysql, VALIDATE_DROP_VIEW_TABLE_SQL), [schema, view]);
+    [dependencies] = await mysql.query<DropViewDependencyRow[]>(queryOptions(mysql, VALIDATE_DROP_VIEW_DEPENDENCIES_SQL), [
+      schema,
+      view,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw dropViewMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (!Array.isArray(tables) || tables.length > 1 || !Array.isArray(dependencies) || dependencies.length > MAX_METADATA_RESULTS)
+    throw dropViewMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const target = tables[0];
+  if (
+    target === undefined ||
+    !isNonEmptyString(target.schemaName) ||
+    !isNonEmptyString(target.tableName) ||
+    !isNonEmptyString(target.tableType) ||
+    target.schemaName !== schema ||
+    target.tableName !== view ||
+    target.tableType !== 'VIEW'
+  )
+    throw dropViewMetadataError('MYSQL_DDL_TABLE_INVALID');
+
+  for (const dependency of dependencies) {
+    if (
+      typeof dependency !== 'object' ||
+      dependency === null ||
+      !isNonEmptyString(dependency.viewSchemaName) ||
+      !isNonEmptyString(dependency.viewName) ||
+      !isNonEmptyString(dependency.tableSchemaName) ||
+      !isNonEmptyString(dependency.tableName) ||
+      dependency.tableSchemaName !== schema ||
+      dependency.tableName !== view ||
+      (dependency.viewSchemaName === schema && dependency.viewName === view)
+    )
+      throw dropViewMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (dependencies.length > 0) throw dropViewMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+}
+
+/** @internal Confirms that the named view no longer exists after DROP VIEW. */
+export async function verifyDropViewMetadata(mysql: ConnectionLayer, schema: string, view: string): Promise<void> {
+  try {
+    const [tables] = await mysql.query<DropViewTableRow[]>(queryOptions(mysql, VALIDATE_DROP_VIEW_TABLE_SQL), [schema, view]);
+    if (!Array.isArray(tables) || tables.length > 0) throw new DropViewVerificationError();
+  } catch (error) {
+    if (error instanceof DropViewVerificationError) throw error;
+    throw new DropViewVerificationError();
   }
 }
 

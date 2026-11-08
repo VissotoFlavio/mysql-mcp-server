@@ -13,6 +13,7 @@ import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '..
 import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
+import { normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 import type { DdlAuditAttempt, DdlAuditWriter } from './ddl-audit.js';
@@ -26,6 +27,7 @@ import {
   buildCreateViewStatement,
   buildCreateUniqueIndexStatement,
   buildDropIndexStatement,
+  buildDropViewStatement,
   buildAlterTableDropForeignKeyStatement,
   buildRenameTableStatement,
 } from './ddl-builder.js';
@@ -49,6 +51,7 @@ import {
   assertCreateIndexSql,
   assertCreateUniqueIndexSql,
   assertDropIndexSql,
+  assertDropViewSql,
   assertAlterTableDropForeignKeySql,
   assertCreateTableSql,
   assertCreateViewSql,
@@ -348,6 +351,7 @@ declare const createViewStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
 declare const dropIndexStatementBrand: unique symbol;
+declare const dropViewStatementBrand: unique symbol;
 declare const alterTableDropForeignKeyStatementBrand: unique symbol;
 declare const alterTableAddColumnStatementBrand: unique symbol;
 declare const alterTableAddForeignKeyStatementBrand: unique symbol;
@@ -373,6 +377,9 @@ export interface CreateUniqueIndexStatement {
 }
 export interface DropIndexStatement {
   readonly [dropIndexStatementBrand]: true;
+}
+export interface DropViewStatement {
+  readonly [dropViewStatementBrand]: true;
 }
 export interface AlterTableDropForeignKeyStatement {
   readonly [alterTableDropForeignKeyStatementBrand]: true;
@@ -412,6 +419,8 @@ export interface DdlConnectionLayer {
     statement: DropIndexStatement,
     verify?: () => Promise<void>,
   ): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeDropView(statement: DropViewStatement): Promise<CreateTableExecutionResult>;
+  executeDropViewWithOperationId(statement: DropViewStatement, verify?: () => Promise<void>): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableDropForeignKey(statement: AlterTableDropForeignKeyStatement): Promise<CreateTableExecutionResult>;
   executeAlterTableDropForeignKeyWithOperationId(
     statement: AlterTableDropForeignKeyStatement,
@@ -445,6 +454,7 @@ export interface ConnectionLayer {
 export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
+  readonly dropViewMetadataComplete: boolean;
   readonly dml: DmlConnectionLayer;
   readonly ddl: DdlConnectionLayer;
 }
@@ -462,6 +472,7 @@ type DdlStatement =
   | CreateIndexStatement
   | CreateUniqueIndexStatement
   | DropIndexStatement
+  | DropViewStatement
   | AlterTableDropForeignKeyStatement
   | AlterTableAddColumnStatement
   | AlterTableAddForeignKeyStatement
@@ -474,6 +485,7 @@ type DdlStatementData =
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
   | Readonly<{ operation: 'drop_index'; sql: string; input: DropIndexInput }>
+  | Readonly<{ operation: 'drop_view'; sql: string; input: DropViewInput }>
   | Readonly<{ operation: 'alter_table_drop_foreign_key'; sql: string; input: AlterTableDropForeignKeyInput }>
   | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>
   | Readonly<{ operation: 'alter_table_add_foreign_key'; sql: string; input: AlterTableAddForeignKeyInput }>
@@ -554,6 +566,21 @@ export function createDropIndexStatement(input: DropIndexInput): DropIndexStatem
   }
   const statement = Object.freeze({}) as DropIndexStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_index', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported named DROP VIEW statement. */
+export function createDropViewStatement(input: DropViewInput): DropViewStatement {
+  let sql: string;
+  let normalized: DropViewInput;
+  try {
+    normalized = normalizeDropViewInput(input);
+    sql = buildDropViewStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as DropViewStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_view', sql, input: normalized }));
   return statement;
 }
 
@@ -943,6 +970,7 @@ export function createConnectionLayer({
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
       else if (statementData.operation === 'drop_index') assertDropIndexSql(statementData.sql);
+      else if (statementData.operation === 'drop_view') assertDropViewSql(statementData.sql);
       else if (statementData.operation === 'alter_table_drop_foreign_key') assertAlterTableDropForeignKeySql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_column') assertAlterTableAddColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_foreign_key') assertAlterTableAddForeignKeySql(statementData.sql);
@@ -995,6 +1023,12 @@ export function createConnectionLayer({
     },
     executeDropIndexWithOperationId: (statement: DropIndexStatement, verify?: () => Promise<void>) =>
       executeDdlWithOperationId(statement, 'drop_index', verify),
+    async executeDropView(statement: DropViewStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'drop_view');
+      return result;
+    },
+    executeDropViewWithOperationId: (statement: DropViewStatement, verify?: () => Promise<void>) =>
+      executeDdlWithOperationId(statement, 'drop_view', verify),
     async executeAlterTableDropForeignKey(statement: AlterTableDropForeignKeyStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'alter_table_drop_foreign_key');
       return result;
@@ -1035,6 +1069,7 @@ export function createConnectionLayer({
   return Object.freeze({
     dmlEnabled: config.dmlEnabled,
     ddlEnabled: config.ddlEnabled,
+    dropViewMetadataComplete: config.dropViewMetadataComplete,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
     async query<T extends QueryResult>(

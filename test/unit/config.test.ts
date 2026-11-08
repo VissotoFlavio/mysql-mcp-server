@@ -16,6 +16,7 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.queryTimeoutMs, 30_000);
   assert.equal(config.dmlEnabled, false);
   assert.equal(config.ddlEnabled, false);
+  assert.equal(config.dropViewMetadataComplete, false);
   assert.equal(config.tls, undefined);
 });
 
@@ -32,6 +33,15 @@ test('loads the DDL opt-in flag only for explicit boolean values', () => {
   for (const invalid of ['TRUE', ' true ', '\ttrue\n', '']) {
     assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: invalid })), /MYSQL_DDL_ENABLED must be true or false/);
   }
+});
+
+test('loads the DROP VIEW metadata completeness attestation only for explicit boolean values', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'true' })).dropViewMetadataComplete, true);
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'false' })).dropViewMetadataComplete, false);
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'TRUE' })),
+    /MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE must be true or false/,
+  );
 });
 
 test('rejects each required connection setting when missing', () => {
