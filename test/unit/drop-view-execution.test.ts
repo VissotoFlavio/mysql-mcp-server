@@ -145,3 +145,57 @@ test('fails closed when metadata completeness is not explicitly attested', async
     await application.close();
   }
 });
+
+test('returns view-specific sanitized messages for metadata rejection paths', async () => {
+  const cases = [
+    {
+      name: 'missing view',
+      query: () => [[], []],
+      expected: { code: 'MYSQL_DDL_TABLE_INVALID', message: 'The target must be an existing view.' },
+    },
+    {
+      name: 'base table',
+      query: (sql: string) =>
+        sql.includes('VIEW_TABLE_USAGE') ? [[], []] : [[{ schemaName: 'app', tableName: 'account_labels', tableType: 'BASE TABLE' }], []],
+      expected: { code: 'MYSQL_DDL_TABLE_INVALID', message: 'The target must be an existing view.' },
+    },
+    {
+      name: 'unavailable metadata',
+      query: () => {
+        throw new Error('driver detail is not exposed');
+      },
+      expected: { code: 'MYSQL_DDL_METADATA_INVALID', message: 'Unable to validate the requested table metadata.' },
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    let executeCalls = 0;
+    const application = createMcpApplication({
+      environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'true' }),
+      driver: {
+        createPool: () =>
+          ({
+            async query(options: { sql: string }) {
+              return testCase.query(options.sql) as never;
+            },
+            async execute() {
+              executeCalls += 1;
+              return [{ affectedRows: 0, warningStatus: 0 }, []];
+            },
+            async end() {},
+          }) as never,
+      },
+    });
+    const client = await connect(application);
+    try {
+      const response = await client.request('tools/call', {
+        name: 'drop_view',
+        arguments: { schema: 'app', view: 'account_labels', reason: `Reject ${testCase.name}.`, confirmation: 'DROP_VIEW' },
+      });
+      assert.deepEqual(response.result?.structuredContent, testCase.expected);
+      assert.equal(executeCalls, 0);
+    } finally {
+      await application.close();
+    }
+  }
+});
