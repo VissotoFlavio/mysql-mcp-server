@@ -192,7 +192,9 @@ test('returns view-specific sanitized messages for metadata rejection paths', as
         name: 'drop_view',
         arguments: { schema: 'app', view: 'account_labels', reason: `Reject ${testCase.name}.`, confirmation: 'DROP_VIEW' },
       });
+      assert.equal(response.result?.isError, true);
       assert.deepEqual(response.result?.structuredContent, testCase.expected);
+      assert.deepEqual(response.result?.content, [{ type: 'text', text: testCase.expected.message }]);
       assert.equal(executeCalls, 0);
     } finally {
       await application.close();
