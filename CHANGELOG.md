@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [#76 — ddl: expose controlled alter_table_drop_foreign_key MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/76)
+
 ## 0.11.0 - 2026-11-06
 
 - [#75 — ddl: expose controlled drop_index MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/75)
