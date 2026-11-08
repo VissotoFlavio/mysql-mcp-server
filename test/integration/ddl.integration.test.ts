@@ -56,6 +56,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
   let createRequested = false;
   let parentCreateRequested = false;
   let viewCreateRequested = false;
+  let viewDropRequested = false;
   let applicationClosed = false;
   client.onmessage = (message) => {
     if (typeof message === 'object' && message !== null && 'id' in message && typeof message.id === 'number') {
@@ -139,6 +140,20 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     assert.deepEqual(viewResult.target, { schema, view });
     assert.deepEqual(viewResult.source, { schema, table, columns: ['id', 'label'] });
     viewCreateRequested = true;
+
+    const dropViewResponse = await request('tools/call', {
+      name: 'drop_view',
+      arguments: { schema, view, reason: 'Remove the isolated projection-only test view', confirmation: 'DROP_VIEW' },
+    });
+    const dropViewResult = dropViewResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; view: string };
+    };
+    assert.equal(dropViewResult.operation, 'drop_view');
+    assert.deepEqual(dropViewResult.target, { schema, view });
+    viewDropRequested = true;
+    const droppedViewResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table: view } });
+    assert.equal(droppedViewResponse.result?.isError, true, 'the dropped temporary view must be absent');
 
     const describedResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
     const described = describedResponse.result?.structuredContent as { table: { schemaName: string; tableName: string; tableType: string } };
@@ -408,7 +423,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
         ssl: connectionConfig.tls ? { ...connectionConfig.tls } : undefined,
       });
       try {
-        if (viewCreateRequested) await cleanupConnection.query(`DROP VIEW IF EXISTS \`${schema}\`.\`${view}\``);
+        if (viewCreateRequested && !viewDropRequested) await cleanupConnection.query(`DROP VIEW IF EXISTS \`${schema}\`.\`${view}\``);
         if (createRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
         if (parentCreateRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${parentTable}\``);
       } finally {

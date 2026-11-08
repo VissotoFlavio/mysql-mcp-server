@@ -90,6 +90,12 @@ A successful response contains only `operation`, `operationId`, `target`, and `w
 
 The bounded preflight confirms the target is absent, the source is an accessible base table, and every selected column is visible; it does not return driver text or values. The account needs `CREATE VIEW` on the target schema and narrowly scoped actual `SELECT` on every projected source table/column; these data privileges are separate from metadata preflight. A view is persistent and can expose projected data to future readers, so confirm its intended audience, dependencies, lifecycle, and explicit cleanup plan. Success returns only the target and source relation metadata, with no SQL or reason. Permission, conflict, metadata, lock/deadlock, structure, and indeterminate outcomes are sanitized. After an indeterminate result, inspect metadata and wait for a new operator-approved request; never retry automatically. The server never removes a view automatically.
 
+### Controlled view removal
+
+`drop_view` is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit confirmation for exactly `{ schema, view, reason, confirmation: "DROP_VIEW" }` after reviewing the view's consumers. It accepts one existing `VIEW` only and emits the canonical `DROP VIEW` form internally; SQL, `IF EXISTS`, `CASCADE`, and multiple targets are unavailable.
+
+The preflight checks `information_schema.TABLES` for the exact view and `information_schema.VIEW_TABLE_USAGE` for known dependent views. Any known dependent view, malformed metadata, or unavailable dependency metadata is rejected before execution; no dependent object is removed automatically. The account needs metadata `SELECT` and `DROP` on the target view. Success verifies the view is absent through discovery and returns only the target and operation metadata. Permission, type, metadata, structure, lock/deadlock, and indeterminate outcomes are sanitized; never retry an indeterminate result without a new operator decision.
+
 ### Controlled index creation
 
 `create_index` is also advertised only with `MYSQL_DDL_ENABLED=true`. After discovering and confirming the target table and columns, obtain explicit operator confirmation for the exact `{ schema, table, index, columns, reason }` request. It creates only a named non-unique B-tree over existing visible, non-generated columns; arbitrary SQL, prefixes, expressions, unique/full-text/spatial/functional indexes, algorithm/lock options, and index changes or removal remain unavailable.
