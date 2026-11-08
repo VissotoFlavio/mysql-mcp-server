@@ -1,6 +1,7 @@
 import type { RowDataPacket } from 'mysql2';
 
 import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
+import type { AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-foreign-key-input.js';
 import type { AlterTableModifyColumnDefinition, AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import type { CreateTableColumnType } from '../tools/create-table-input.js';
 
@@ -207,6 +208,20 @@ const VALIDATE_ALTER_TABLE_FOREIGN_KEY_CONSTRAINT_SQL = `
   SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, CONSTRAINT_NAME AS constraintName, CONSTRAINT_TYPE AS constraintType
   FROM information_schema.TABLE_CONSTRAINTS
   WHERE CONSTRAINT_SCHEMA = ? AND CONSTRAINT_NAME = ?
+  LIMIT 2
+`;
+
+const VALIDATE_ALTER_TABLE_DROP_FOREIGN_KEY_TABLE_SQL = `
+  SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  LIMIT 2
+`;
+const VALIDATE_ALTER_TABLE_DROP_FOREIGN_KEY_CONSTRAINT_SQL = `
+  SELECT CONSTRAINT_SCHEMA AS schemaName, TABLE_SCHEMA AS tableSchemaName, TABLE_NAME AS tableName,
+    CONSTRAINT_NAME AS constraintName, CONSTRAINT_TYPE AS constraintType
+  FROM information_schema.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = ? AND TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = ?
   LIMIT 2
 `;
 
@@ -563,6 +578,16 @@ export class AlterTableAddForeignKeyMetadataError extends Error {
     this.code = code;
   }
 }
+export type AlterTableDropForeignKeyMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
+export class AlterTableDropForeignKeyMetadataError extends Error {
+  constructor(
+    readonly code: AlterTableDropForeignKeyMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AlterTableDropForeignKeyMetadataError';
+  }
+}
 
 const DML_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const DML_METADATA_BASE_TABLE_ONLY = 'DML metadata is supported for base tables only.';
@@ -589,6 +614,9 @@ const ALTER_TABLE_RENAME_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE RENAME C
 const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID = 'The source column is unknown or inaccessible.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_EXISTS = 'The destination column already exists.';
 const RENAME_TABLE_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
+const ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_UNAVAILABLE = 'Unable to validate the requested foreign-key metadata.';
+const ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_TABLE_INVALID = 'ALTER TABLE DROP FOREIGN KEY is supported for base tables only.';
+const ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_STRUCTURE_INVALID = 'The named constraint is not a foreign key on the requested table.';
 const RENAME_TABLE_METADATA_SOURCE_INVALID = 'The source must be an existing base table.';
 const RENAME_TABLE_METADATA_DESTINATION_EXISTS = 'The destination table already exists.';
 const ALTER_TABLE_FOREIGN_KEY_METADATA_UNAVAILABLE = 'Unable to validate the requested foreign-key metadata.';
@@ -1847,4 +1875,52 @@ export async function validateAlterTableAddForeignKeyMetadata(
   const orphanExists = orphanRows[0].orphanExists;
   if (orphanExists === 1 || orphanExists === '1') throw foreignKeyError('MYSQL_DDL_FOREIGN_KEY_ORPHANS');
   if (orphanExists !== 0 && orphanExists !== '0') throw foreignKeyError('MYSQL_DDL_METADATA_INVALID');
+}
+
+/** @internal Confirms that the named constraint is a foreign key on the requested base table. */
+export async function validateAlterTableDropForeignKeyMetadata(mysql: ConnectionLayer, input: AlterTableDropForeignKeyInput): Promise<void> {
+  interface DropForeignKeyTableRow extends RowDataPacket {
+    schemaName: string;
+    tableName: string;
+    tableType: string;
+  }
+  interface DropForeignKeyConstraintRow extends RowDataPacket {
+    schemaName: string;
+    tableSchemaName: string;
+    tableName: string;
+    constraintName: string;
+    constraintType: string;
+  }
+  let tables: DropForeignKeyTableRow[];
+  let constraints: DropForeignKeyConstraintRow[];
+  try {
+    [tables] = await mysql.query<TableRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_FOREIGN_KEY_TABLE_SQL), [input.schema, input.table]);
+    [constraints] = await mysql.query<DropForeignKeyConstraintRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_FOREIGN_KEY_CONSTRAINT_SQL), [
+      input.schema,
+      input.schema,
+      input.table,
+      input.constraint,
+    ]);
+  } catch {
+    throw new AlterTableDropForeignKeyMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_UNAVAILABLE);
+  }
+  if (!Array.isArray(tables) || tables.length !== 1)
+    throw new AlterTableDropForeignKeyMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_UNAVAILABLE);
+  const table = tables[0];
+  if (!table || table.schemaName !== input.schema || table.tableName !== input.table)
+    throw new AlterTableDropForeignKeyMetadataError('MYSQL_DDL_METADATA_INVALID', ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_UNAVAILABLE);
+  if (table.tableType !== 'BASE TABLE')
+    throw new AlterTableDropForeignKeyMetadataError('MYSQL_DDL_TABLE_INVALID', ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_TABLE_INVALID);
+  if (!Array.isArray(constraints) || constraints.length !== 1)
+    throw new AlterTableDropForeignKeyMetadataError('MYSQL_DDL_STRUCTURE_INVALID', ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_STRUCTURE_INVALID);
+  const constraint = constraints[0];
+  if (
+    !constraint ||
+    constraint.schemaName !== input.schema ||
+    constraint.tableSchemaName !== input.schema ||
+    constraint.tableName !== input.table ||
+    constraint.constraintName !== input.constraint ||
+    constraint.constraintType !== 'FOREIGN KEY'
+  )
+    throw new AlterTableDropForeignKeyMetadataError('MYSQL_DDL_STRUCTURE_INVALID', ALTER_TABLE_DROP_FOREIGN_KEY_METADATA_STRUCTURE_INVALID);
 }

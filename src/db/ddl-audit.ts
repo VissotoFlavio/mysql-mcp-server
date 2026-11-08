@@ -11,6 +11,11 @@ import {
   type AlterTableAddForeignKeyInput,
 } from '../tools/alter-table-add-foreign-key-input.js';
 import {
+  AlterTableDropForeignKeyInputValidationError,
+  normalizeAlterTableDropForeignKeyInput,
+  type AlterTableDropForeignKeyInput,
+} from '../tools/alter-table-drop-foreign-key-input.js';
+import {
   AlterTableModifyColumnInputValidationError,
   normalizeAlterTableModifyColumnInput,
   type AlterTableModifyColumnInput,
@@ -33,6 +38,7 @@ import {
   DropIndexMetadataError,
   DropIndexVerificationError,
   RenameTableMetadataError,
+  AlterTableDropForeignKeyMetadataError,
 } from './metadata.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
@@ -43,6 +49,7 @@ export type DdlAuditOperation =
   | 'create_index'
   | 'create_unique_index'
   | 'drop_index'
+  | 'alter_table_drop_foreign_key'
   | 'alter_table_add_column'
   | 'alter_table_add_foreign_key'
   | 'alter_table_modify_column'
@@ -75,7 +82,15 @@ export interface DdlAuditEvent {
   readonly timestamp: string;
   readonly operationId: string;
   readonly operation: DdlAuditOperation;
-  readonly target: Readonly<{ schema: string; table: string; index?: string; column?: string; newColumn?: string; newTable?: string }>;
+  readonly target: Readonly<{
+    schema: string;
+    table: string;
+    index?: string;
+    constraint?: string;
+    column?: string;
+    newColumn?: string;
+    newTable?: string;
+  }>;
   readonly reason: string;
   readonly columnCount: number | null;
   readonly primaryKeyColumnCount: number | null;
@@ -107,6 +122,7 @@ type NormalizedRequest = Readonly<{
     | CreateIndexInput
     | CreateUniqueIndexInput
     | DropIndexInput
+    | AlterTableDropForeignKeyInput
     | AlterTableAddColumnInput
     | AlterTableAddForeignKeyInput
     | AlterTableModifyColumnInput
@@ -180,6 +196,13 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
       return INVALID_REQUEST;
     }
   }
+  if (expectedOperation === 'alter_table_drop_foreign_key') {
+    try {
+      return Object.freeze({ operation: 'alter_table_drop_foreign_key', input: normalizeAlterTableDropForeignKeyInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
   if (expectedOperation === 'drop_index') {
     try {
       return Object.freeze({ operation: 'drop_index', input: normalizeDropIndexInput(request) });
@@ -204,6 +227,11 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   }
   try {
     return Object.freeze({ operation: 'drop_index', input: normalizeDropIndexInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'alter_table_drop_foreign_key', input: normalizeAlterTableDropForeignKeyInput(request) });
   } catch {
     /* try the other supported DDL contract */
   }
@@ -255,20 +283,22 @@ function canonicalRequest(request: NormalizedRequest): object {
                 onDelete: (input as AlterTableAddForeignKeyInput).onDelete,
                 onUpdate: (input as AlterTableAddForeignKeyInput).onUpdate,
               }
-            : request.operation === 'alter_table_modify_column'
-              ? {
-                  column: (input as AlterTableModifyColumnInput).column,
-                  definition: (input as AlterTableModifyColumnInput).definition,
-                }
-              : request.operation === 'drop_index'
-                ? { index: (input as DropIndexInput).index }
-                : {
-                    columns: inputWithColumns.columns.map((column) =>
-                      typeof column === 'string'
-                        ? column
-                        : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-                    ),
-                  }),
+            : request.operation === 'alter_table_drop_foreign_key'
+              ? { constraint: (input as AlterTableDropForeignKeyInput).constraint }
+              : request.operation === 'alter_table_modify_column'
+                ? {
+                    column: (input as AlterTableModifyColumnInput).column,
+                    definition: (input as AlterTableModifyColumnInput).definition,
+                  }
+                : request.operation === 'drop_index'
+                  ? { index: (input as DropIndexInput).index }
+                  : {
+                      columns: inputWithColumns.columns.map((column) =>
+                        typeof column === 'string'
+                          ? column
+                          : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
+                      ),
+                    }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -290,6 +320,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, AlterTableModifyColumnInputValidationError) ||
       safeInstanceOf(error, AlterTableRenameColumnInputValidationError) ||
       safeInstanceOf(error, RenameTableInputValidationError) ||
+      safeInstanceOf(error, AlterTableDropForeignKeyInputValidationError) ||
       safeInstanceOf(error, DdlPolicyError) ||
       safeInstanceOf(error, DdlAuditInputError)
     )
@@ -320,6 +351,14 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
         : code === 'MYSQL_DDL_TABLE_INVALID'
           ? OUTCOMES.tableInvalid
           : OUTCOMES.tableExists;
+    }
+    if (safeInstanceOf(error, AlterTableDropForeignKeyMetadataError)) {
+      const code = (error as AlterTableDropForeignKeyMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : OUTCOMES.structure;
     }
     if (hasSafeCode(error, 'MYSQL_DDL_INDEX_EXISTS')) return OUTCOMES.indexExists;
     if (hasSafeCode(error, 'MYSQL_DDL_DUPLICATE_DATA')) return OUTCOMES.duplicateData;
@@ -376,9 +415,11 @@ function baseEvent(
               ? { schema: input.schema, table: input.table, index: (input as CreateIndexInput | CreateUniqueIndexInput | DropIndexInput).index }
               : normalized.operation === 'rename_table'
                 ? { schema: input.schema, table: input.table, newTable: (input as RenameTableInput).newTable }
-                : normalized.operation === 'alter_table_modify_column'
-                  ? { schema: input.schema, table: input.table, column: (input as AlterTableModifyColumnInput).column }
-                  : { schema: input.schema, table: input.table },
+                : normalized.operation === 'alter_table_drop_foreign_key'
+                  ? { schema: input.schema, table: input.table, constraint: (input as AlterTableDropForeignKeyInput).constraint }
+                  : normalized.operation === 'alter_table_modify_column'
+                    ? { schema: input.schema, table: input.table, column: (input as AlterTableModifyColumnInput).column }
+                    : { schema: input.schema, table: input.table },
           ),
     reason: input?.reason ?? '[invalid]',
     columnCount:
@@ -394,7 +435,9 @@ function baseEvent(
                 ? null
                 : normalized.operation === 'drop_index'
                   ? null
-                  : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
+                  : normalized.operation === 'alter_table_drop_foreign_key'
+                    ? null
+                    : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };
