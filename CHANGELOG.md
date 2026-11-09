@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 - 2026-11-08
 
 - [#81 — feat: add controlled `create_schema`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/81)
 
