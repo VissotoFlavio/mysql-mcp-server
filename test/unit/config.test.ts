@@ -20,6 +20,8 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.dropViewMetadataComplete, false);
   assert.equal(config.dropColumnEnabled, false);
   assert.equal(config.dropColumnMetadataComplete, false);
+  assert.equal(config.dropTableEnabled, false);
+  assert.equal(config.dropTableMetadataComplete, false);
   assert.equal(config.tls, undefined);
 });
 
@@ -87,6 +89,26 @@ test('loads the DROP COLUMN metadata completeness attestation only with the dest
   assert.throws(
     () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE: 'TRUE' })),
     /MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE must be true or false/,
+  );
+});
+
+test('loads the separate DROP TABLE opt-in and metadata completeness attestation only with DDL enabled', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_TABLE_ENABLED: 'true' })).dropTableEnabled, false);
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_TABLE_ENABLED: 'true' })).dropTableEnabled, true);
+  assert.equal(
+    loadConnectionConfig(
+      validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_TABLE_ENABLED: 'true', MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE: 'true' }),
+    ).dropTableMetadataComplete,
+    true,
+  );
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE: 'true' })).dropTableMetadataComplete, false);
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_TABLE_ENABLED: 'TRUE' })),
+    /MYSQL_DDL_DROP_TABLE_ENABLED must be true or false/,
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE: 'TRUE' })),
+    /MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE must be true or false/,
   );
 });
 

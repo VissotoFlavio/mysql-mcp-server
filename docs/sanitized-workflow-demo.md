@@ -114,6 +114,12 @@ The bounded preflight confirms the target is absent, the source is an accessible
 
 The preflight checks `information_schema.TABLES` for the exact view and `information_schema.VIEW_TABLE_USAGE` for known dependent views. MySQL exposes only metadata for objects on which the account has privileges, so the explicit metadata-completeness flag is required and must be backed by an account with visibility across every relevant schema; without it the tool rejects the request before any DDL. `VIEW_TABLE_USAGE` is available from MySQL 8.0.13; older servers fail closed. Any known dependent view, malformed metadata, or unavailable dependency metadata is rejected before execution; no dependent object is removed automatically. The account needs metadata `SELECT` across relevant views/tables and `DROP` on the target view. Success verifies the view is absent through discovery and returns only the target and operation metadata. The preflight is not a lock against concurrent DDL, so run the operation during a controlled maintenance window and verify consumers afterward. Permission, type, metadata, structure, lock/deadlock, and indeterminate outcomes are sanitized; never retry an indeterminate result without a new operator decision.
 
+### Controlled table removal
+
+`drop_table` is advertised only when `MYSQL_DDL_ENABLED=true`, `MYSQL_DDL_DROP_TABLE_ENABLED=true`, and `MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE=true`. First call `describe_table` for the exact target. Its short-lived opaque `metadataRevision` is bound to the target metadata and table creation identity; pass it once as `confirmation: "DROP_TABLE:<metadataRevision>"` with exactly `{ schema, table, reason, confirmation }`. A changed or recreated table produces a different attestation and fails closed before DDL.
+
+The preflight accepts one existing `BASE TABLE` only and rejects malformed or unavailable metadata, dependent views from `information_schema.VIEW_TABLE_USAGE`, foreign-key relationships, and triggers. The metadata-completeness flag is an operator attestation that the configured account can see all relevant dependency metadata; the account needs metadata `SELECT` plus `DROP` on the target table. The tool emits only canonical internal `DROP TABLE` for that one target: `IF EXISTS`, `CASCADE`, SQL, schemas, views, multiple tables, backup, and recovery are unavailable. Dropping a table is irreversible; take and verify backups externally before confirmation, use a maintenance window, verify absence through `describe_table` or discovery afterward, and never automatically retry permission, lock/deadlock, structural, or indeterminate outcomes.
+
 ### Controlled index creation
 
 `create_index` is also advertised only with `MYSQL_DDL_ENABLED=true`. After discovering and confirming the target table and columns, obtain explicit operator confirmation for the exact `{ schema, table, index, columns, reason }` request. It creates only a named non-unique B-tree over existing visible, non-generated columns; arbitrary SQL, prefixes, expressions, unique/full-text/spatial/functional indexes, algorithm/lock options, and index changes or removal remain unavailable.
@@ -167,12 +173,15 @@ $env:MYSQL_DDL_ENABLED = 'true'
 $env:MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE = 'true'
 $env:MYSQL_DDL_DROP_COLUMN_ENABLED = 'true'
 $env:MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE = 'true'
+$env:MYSQL_DDL_DROP_TABLE_ENABLED = 'true'
+$env:MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE = 'true'
 $env:MYSQL_DDL_INTEGRATION_CONFIRM = 'isolated-database-schema'
 $env:MYSQL_DDL_INTEGRATION_TABLE = 'mcp_ddl_test_synthetic'
+$env:MYSQL_DDL_DROP_TABLE_INTEGRATION_TABLE = 'mcp_ddl_test_drop_table_synthetic'
 npm run test:integration
 ```
 
-The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. The test also drops only the explicitly confirmed `renamed_note` column from that one temporary table. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
+Each temporary table name must begin with `mcp_ddl_test_`; these guards and the separate confirmation fail closed. The focused drop-table contract uses `MYSQL_DDL_DROP_TABLE_INTEGRATION_TABLE` and is skipped when it is unset. The test drops only the explicitly confirmed disposable table and its derived cleanup objects, plus the explicitly confirmed `renamed_note` column from that table. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
 
 The separate `create_schema` integration owner is skipped unless it receives a separate explicit authorization: `MYSQL_DDL_CREATE_SCHEMA_INTEGRATION_TEST=true`, `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true`, `MYSQL_DDL_CREATE_SCHEMA_INTEGRATION_CONFIRM=isolated-schema-create-drop`, and the derived target begins with `mcp_ddl_test_`. The generic DDL table confirmation above intentionally does not activate it. This test creates and drops one schema distinct from `MYSQL_DATABASE` and removes only that exact derived target during cleanup. Do not provide these values or run it without explicit authorization for that isolated schema lifecycle.
 

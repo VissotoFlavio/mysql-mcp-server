@@ -1,5 +1,5 @@
 import type { ExecuteValues } from 'mysql2';
-import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues } from 'mysql2/promise';
+import mysql, { type Pool, type PoolConnection, type PoolOptions, type QueryResult, type QueryValues } from 'mysql2/promise';
 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
@@ -15,6 +15,7 @@ import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '..
 import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
+import { normalizeDropTableInput, type DropTableInput } from '../tools/drop-table-input.js';
 import { normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
@@ -30,6 +31,7 @@ import {
   buildCreateViewStatement,
   buildCreateUniqueIndexStatement,
   buildDropIndexStatement,
+  buildDropTableStatement,
   buildDropViewStatement,
   buildAlterTableDropForeignKeyStatement,
   buildAlterTableDropColumnStatement,
@@ -56,6 +58,7 @@ import {
   assertCreateSchemaSql,
   assertCreateUniqueIndexSql,
   assertDropIndexSql,
+  assertDropTableSql,
   assertDropViewSql,
   assertAlterTableDropForeignKeySql,
   assertAlterTableDropColumnSql,
@@ -358,6 +361,7 @@ declare const createViewStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
 declare const dropIndexStatementBrand: unique symbol;
+declare const dropTableStatementBrand: unique symbol;
 declare const dropViewStatementBrand: unique symbol;
 declare const alterTableDropForeignKeyStatementBrand: unique symbol;
 declare const alterTableDropColumnStatementBrand: unique symbol;
@@ -388,6 +392,9 @@ export interface CreateUniqueIndexStatement {
 }
 export interface DropIndexStatement {
   readonly [dropIndexStatementBrand]: true;
+}
+export interface DropTableStatement {
+  readonly [dropTableStatementBrand]: true;
 }
 export interface DropViewStatement {
   readonly [dropViewStatementBrand]: true;
@@ -435,6 +442,12 @@ export interface DdlConnectionLayer {
     statement: DropIndexStatement,
     verify?: () => Promise<void>,
   ): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeDropTable(statement: DropTableStatement): Promise<CreateTableExecutionResult>;
+  executeDropTableWithOperationId(
+    statement: DropTableStatement,
+    verify?: () => Promise<void>,
+    preflight?: (connection: ConnectionLayer) => Promise<void>,
+  ): Promise<readonly [CreateTableExecutionResult, string]>;
   executeDropView(statement: DropViewStatement): Promise<CreateTableExecutionResult>;
   executeDropViewWithOperationId(statement: DropViewStatement, verify?: () => Promise<void>): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableDropForeignKey(statement: AlterTableDropForeignKeyStatement): Promise<CreateTableExecutionResult>;
@@ -472,6 +485,8 @@ export interface ConnectionLayer {
   close(): Promise<void>;
 }
 
+type DdlPreflight = (connection: ConnectionLayer) => Promise<void>;
+
 export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
@@ -479,6 +494,8 @@ export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dropViewMetadataComplete: boolean;
   readonly dropColumnEnabled: boolean;
   readonly dropColumnMetadataComplete: boolean;
+  readonly dropTableEnabled: boolean;
+  readonly dropTableMetadataComplete: boolean;
   readonly dml: DmlConnectionLayer;
   readonly ddl: DdlConnectionLayer;
 }
@@ -497,6 +514,7 @@ type DdlStatement =
   | CreateIndexStatement
   | CreateUniqueIndexStatement
   | DropIndexStatement
+  | DropTableStatement
   | DropViewStatement
   | AlterTableDropForeignKeyStatement
   | AlterTableDropColumnStatement
@@ -512,6 +530,7 @@ type DdlStatementData =
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
   | Readonly<{ operation: 'drop_index'; sql: string; input: DropIndexInput }>
+  | Readonly<{ operation: 'drop_table'; sql: string; input: DropTableInput }>
   | Readonly<{ operation: 'drop_view'; sql: string; input: DropViewInput }>
   | Readonly<{ operation: 'alter_table_drop_foreign_key'; sql: string; input: AlterTableDropForeignKeyInput }>
   | Readonly<{ operation: 'alter_table_drop_column'; sql: string; input: AlterTableDropColumnInput }>
@@ -609,6 +628,21 @@ export function createDropIndexStatement(input: DropIndexInput): DropIndexStatem
   }
   const statement = Object.freeze({}) as DropIndexStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_index', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported named DROP TABLE statement. */
+export function createDropTableStatement(input: DropTableInput): DropTableStatement {
+  let sql: string;
+  let normalized: DropTableInput;
+  try {
+    normalized = normalizeDropTableInput(input);
+    sql = buildDropTableStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as DropTableStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_table', sql, input: normalized }));
   return statement;
 }
 
@@ -1000,6 +1034,7 @@ export function createConnectionLayer({
     statement: DdlStatement,
     expected: DdlStatementData['operation'],
     verify?: () => Promise<void>,
+    preflight?: DdlPreflight,
   ): Promise<readonly [CreateTableExecutionResult, string]> {
     let statementData: DdlStatementData | undefined;
     let auditRequest: unknown;
@@ -1020,11 +1055,14 @@ export function createConnectionLayer({
     }
 
     let submitted = false;
+    let exclusiveConnection: PoolConnection | undefined;
     try {
       if (!config.ddlEnabled) throw new DdlDisabledError();
       if (expected === 'create_schema' && !config.createSchemaEnabled) throw new DdlDisabledError();
       if (expected === 'alter_table_drop_column' && !config.dropColumnEnabled) throw new DdlDisabledError();
       if (expected === 'alter_table_drop_column' && !config.dropColumnMetadataComplete) throw new DdlDisabledError();
+      if (expected === 'drop_table' && !config.dropTableEnabled) throw new DdlDisabledError();
+      if (expected === 'drop_table' && !config.dropTableMetadataComplete) throw new DdlDisabledError();
       if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
       if (statementData.operation === 'create_schema') assertCreateSchemaSql(statementData.sql);
       else if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
@@ -1032,6 +1070,7 @@ export function createConnectionLayer({
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
       else if (statementData.operation === 'drop_index') assertDropIndexSql(statementData.sql);
+      else if (statementData.operation === 'drop_table') assertDropTableSql(statementData.sql);
       else if (statementData.operation === 'drop_view') assertDropViewSql(statementData.sql);
       else if (statementData.operation === 'alter_table_drop_foreign_key') assertAlterTableDropForeignKeySql(statementData.sql);
       else if (statementData.operation === 'alter_table_drop_column') assertAlterTableDropColumnSql(statementData.sql);
@@ -1040,22 +1079,55 @@ export function createConnectionLayer({
       else if (statementData.operation === 'alter_table_modify_column') assertAlterTableModifyColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_rename_column') assertAlterTableRenameColumnSql(statementData.sql);
       else assertRenameTableSql(statementData.sql);
+      if (expected === 'drop_table' && preflight !== undefined) {
+        const candidatePool = pool as Pool & { getConnection?: () => Promise<PoolConnection> };
+        if (typeof candidatePool.getConnection === 'function') {
+          exclusiveConnection = await candidatePool.getConnection();
+          await preflight({
+            query: (options, values) => exclusiveConnection!.query(options, values),
+            queryOptions: () => queryOptions,
+            queryTimeoutMs: config.queryTimeoutMs,
+            verifyConnection: async () => exclusiveConnection!.ping(),
+            close: async () => {},
+          });
+        } else {
+          await preflight({
+            query: (options, values) => pool.query(options, values),
+            queryOptions: () => queryOptions,
+            queryTimeoutMs: config.queryTimeoutMs,
+            verifyConnection: async () => {},
+            close: async () => {},
+          });
+        }
+      }
       audit.markSubmitted();
       submitted = true;
-      const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
+      const [result] = await (exclusiveConnection ?? pool).execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
       const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' ? 1 : 0);
-      if (verify !== undefined) await verify();
+      if (verify !== undefined) {
+        await verify();
+      }
       audit.emit();
       return [normalizedResult, audit.operationId];
     } catch (error) {
       let safeError: unknown;
       if (isQueryTimeout(error)) safeError = new QueryTimeoutError(submitted);
       else if (isTransportLoss(error)) safeError = new ConnectionError('Unable to execute the DDL statement.', submitted);
-      else if (safeInstanceOf(error, DdlResultError) || safeInstanceOf(error, DdlPolicyError) || safeInstanceOf(error, DdlDisabledError))
+      else if (
+        safeInstanceOf(error, DdlResultError) ||
+        safeInstanceOf(error, DdlPolicyError) ||
+        safeInstanceOf(error, DdlDisabledError) ||
+        safeInstanceOf(error, DdlDriverError) ||
+        (error instanceof Error && error.name === 'DropTableMetadataError')
+      )
         safeError = error;
       else safeError = new DdlDriverError(safeDdlDriverCode(error), submitted);
       audit.emit({ error: safeError });
       throw safeError;
+    } finally {
+      if (exclusiveConnection !== undefined) {
+        exclusiveConnection.release();
+      }
     }
   }
 
@@ -1091,6 +1163,12 @@ export function createConnectionLayer({
     },
     executeDropIndexWithOperationId: (statement: DropIndexStatement, verify?: () => Promise<void>) =>
       executeDdlWithOperationId(statement, 'drop_index', verify),
+    async executeDropTable(statement: DropTableStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'drop_table');
+      return result;
+    },
+    executeDropTableWithOperationId: (statement: DropTableStatement, verify?: () => Promise<void>, preflight?: DdlPreflight) =>
+      executeDdlWithOperationId(statement, 'drop_table', verify, preflight),
     async executeDropView(statement: DropViewStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'drop_view');
       return result;
@@ -1147,6 +1225,8 @@ export function createConnectionLayer({
     dropViewMetadataComplete: config.dropViewMetadataComplete,
     dropColumnEnabled: config.dropColumnEnabled,
     dropColumnMetadataComplete: config.dropColumnMetadataComplete,
+    dropTableEnabled: config.dropTableEnabled,
+    dropTableMetadataComplete: config.dropTableMetadataComplete,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
     async query<T extends QueryResult>(
