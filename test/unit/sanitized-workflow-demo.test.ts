@@ -193,22 +193,22 @@ test('runs the published sanitized MCP workflow', async () => {
     assert.deepEqual(toolResult(await client.request('tools/call', { name: 'list_accessible_tables', arguments: { schema: 'demo_catalog' } })), {
       metadata: [{ schemaName: 'demo_catalog', tableName: 'sample_records', tableType: 'BASE TABLE' }],
     });
-    assert.deepEqual(
-      toolResult(
-        await client.request('tools/call', {
-          name: 'describe_table',
-          arguments: { schema: 'demo_catalog', table: 'sample_records' },
-        }),
-      ),
-      {
-        table: { schemaName: 'demo_catalog', tableName: 'sample_records', tableType: 'BASE TABLE' },
-        columns: [
-          { columnName: 'record_id', dataType: 'bigint', isNullable: false, columnKey: 'PRI' },
-          { columnName: 'created_at', dataType: 'datetime', isNullable: false, columnKey: '' },
-          { columnName: 'label', dataType: 'varchar', isNullable: false, columnKey: '' },
-        ],
-      },
-    );
+    const describedTable = toolResult(
+      await client.request('tools/call', {
+        name: 'describe_table',
+        arguments: { schema: 'demo_catalog', table: 'sample_records' },
+      }),
+    ) as Record<string, unknown>;
+    assert.deepEqual(describedTable, {
+      table: { schemaName: 'demo_catalog', tableName: 'sample_records', tableType: 'BASE TABLE' },
+      columns: [
+        { columnName: 'record_id', dataType: 'bigint', isNullable: false, columnKey: 'PRI' },
+        { columnName: 'created_at', dataType: 'datetime', isNullable: false, columnKey: '' },
+        { columnName: 'label', dataType: 'varchar', isNullable: false, columnKey: '' },
+      ],
+      metadataRevision: describedTable.metadataRevision,
+    });
+    assert.match(describedTable.metadataRevision as string, /^[0-9a-f]{64}$/u);
 
     const createTableResponse = await client.request('tools/call', {
       name: 'create_table',

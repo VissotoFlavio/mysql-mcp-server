@@ -71,7 +71,9 @@ function isTableDescriptionResult(value: unknown): value is TableDescriptionResu
 
   const result = value as Record<string, unknown>;
   return (
-    Object.keys(result).length === 2 &&
+    Object.keys(result).length === 3 &&
+    typeof result.metadataRevision === 'string' &&
+    /^[0-9a-f]{64}$/u.test(result.metadataRevision) &&
     hasExactStringProperties(result.table, ['schemaName', 'tableName', 'tableType']) &&
     Array.isArray(result.columns) &&
     result.columns.every(
@@ -114,8 +116,9 @@ function tableDescriptionOutputJsonSchema(): Record<string, unknown> {
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['table', 'columns'],
+    required: ['table', 'columns', 'metadataRevision'],
     properties: {
+      metadataRevision: { type: 'string', pattern: '^[0-9a-f]{64}$' },
       table: {
         type: 'object',
         additionalProperties: false,
@@ -171,7 +174,7 @@ export function registerDescribeTableTool(server: McpServer, mysql: ConnectionLa
     },
     async ({ schema, table }) => {
       try {
-        const description = await describeAccessibleTable(mysql, schema, table);
+        const description = await describeAccessibleTable(mysql, schema, table, true);
         if (description === undefined) {
           return errorResult('The requested table or view was not found or is not accessible. Verify the identifiers and configured permissions.');
         }
