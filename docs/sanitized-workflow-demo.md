@@ -165,12 +165,14 @@ $env:MYSQL_DDL_INTEGRATION_TEST = 'true'
 $env:MYSQL_DML_ENABLED = 'true'
 $env:MYSQL_DDL_ENABLED = 'true'
 $env:MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE = 'true'
+$env:MYSQL_DDL_DROP_COLUMN_ENABLED = 'true'
+$env:MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE = 'true'
 $env:MYSQL_DDL_INTEGRATION_CONFIRM = 'isolated-database-schema'
 $env:MYSQL_DDL_INTEGRATION_TABLE = 'mcp_ddl_test_synthetic'
 npm run test:integration
 ```
 
-The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
+The table name must begin with `mcp_ddl_test_`; this guard and the separate confirmation fail closed. The test also drops only the explicitly confirmed `renamed_note` column from that one temporary table. Do not provide those values, or run the test, without explicit authorization to mutate that isolated schema.
 
 The separate `create_schema` integration owner is skipped unless it receives a separate explicit authorization: `MYSQL_DDL_CREATE_SCHEMA_INTEGRATION_TEST=true`, `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true`, `MYSQL_DDL_CREATE_SCHEMA_INTEGRATION_CONFIRM=isolated-schema-create-drop`, and the derived target begins with `mcp_ddl_test_`. The generic DDL table confirmation above intentionally does not activate it. This test creates and drops one schema distinct from `MYSQL_DATABASE` and removes only that exact derived target during cleanup. Do not provide these values or run it without explicit authorization for that isolated schema lifecycle.
 
@@ -191,6 +193,12 @@ The preflight verifies both base tables use InnoDB, the constraint is new, pairs
 `alter_table_modify_column` is advertised only with `MYSQL_DDL_ENABLED=true`. Obtain explicit confirmation for exactly `{ schema, table, column, definition, reason }`, where `definition.name` must equal `column` and the remaining fields are the complete structured target definition. The first version permits only same-family widening: signedness-preserving integer widening, greater DECIMAL precision with the same scale, greater CHAR/VARCHAR length of the same kind, greater fractional-seconds precision of the same temporal kind, or changing `NOT NULL` to `NULL`. It rejects narrowing, signedness changes, type-family changes, renames, multiple columns, generated or invisible columns, defaults not represented by the contract, foreign-key dependencies, unsupported index forms, and arbitrary SQL.
 
 The preflight reads bounded `information_schema` metadata and does not return column values. Existing B-tree index dependencies may require an index or table rebuild and metadata locks; functional/unsupported indexes, CHECK constraints, and foreign-key dependencies (including references from another schema) are rejected so both sides cannot become type-incompatible. Text widening preserves the current character set and collation in the generated statement. Primary-key columns cannot be made nullable. Use only metadata `SELECT` and `ALTER` on the target table. After success, the server verifies the resulting type, nullability, and preserved text settings; clients should also verify through `describe_table` or another permitted metadata read. A lock timeout, deadlock, structural failure, permission error, or `MYSQL_DDL_OUTCOME_UNKNOWN` remains sanitized; verify state before any new operator-approved request and never retry automatically.
+
+### Controlled column removal
+
+`alter_table_drop_column` is advertised only when `MYSQL_DDL_ENABLED=true`, the separate strict `MYSQL_DDL_DROP_COLUMN_ENABLED=true` opt-in, and the explicit `MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE=true` metadata visibility attestation are enabled. Obtain explicit confirmation for exactly `{ schema, table, column, reason, confirmation: "DROP_COLUMN" }`. The operation accepts one existing base-table column only; generated columns and columns involved in a primary key, any index/statistics entry, local or referenced foreign key, table constraint or CHECK, or known `information_schema.VIEW_TABLE_USAGE` dependency are rejected. SQL, expressions, options, multiple columns, cascades, and bypasses are unavailable, and no dependency is removed or rebuilt automatically.
+
+The account needs metadata `SELECT` visibility plus `ALTER` on the target table. The preflight fails closed if any required metadata is missing, malformed, or incomplete, and the result is verified by confirming the column is absent after execution. Permission, structural, lock-timeout, deadlock, and indeterminate outcomes are sanitized; after an indeterminate result, verify state before a new operator-approved request and never retry automatically. The preflight is not a lock against concurrent DDL/DML, so use a controlled maintenance window.
 
 ### Controlled table rename
 

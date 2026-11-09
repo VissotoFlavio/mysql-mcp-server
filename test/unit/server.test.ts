@@ -62,3 +62,29 @@ test('exposes DML and DDL opt-in state through application composition', async (
     await application.close();
   }
 });
+
+test('advertises DROP COLUMN only when all capability flags are enabled', async () => {
+  for (const [override, expected] of [
+    [{ MYSQL_DDL_ENABLED: 'true' }, false],
+    [{ MYSQL_DDL_ENABLED: 'false', MYSQL_DDL_DROP_COLUMN_ENABLED: 'true' }, false],
+    [{ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_ENABLED: 'true' }, true],
+    [{ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE: 'true' }, true],
+  ] as const) {
+    const application = createMcpApplication({
+      environment: validEnvironment(override),
+      driver: {
+        createPool: () =>
+          ({
+            async query() {
+              return [[]];
+            },
+            async end() {},
+          }) as never,
+      },
+    });
+    const transport = new StdioServerTransport(new PassThrough(), new PassThrough());
+    await application.server.connect(transport);
+    assert.equal(application.mysql.dropColumnEnabled, expected);
+    await application.close();
+  }
+});
