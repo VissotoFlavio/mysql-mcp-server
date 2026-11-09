@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-11-09
 
 - [#79 — feat: add controlled `drop_table`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/79): separate destructive opt-in, target-bound metadata revision confirmation, fail-closed dependency preflight, sanitized audit/outcomes, post-execution verification, and no automatic retry.
 
