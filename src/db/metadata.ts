@@ -1,6 +1,7 @@
 import type { RowDataPacket } from 'mysql2';
 
 import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
+import type { AlterTableDropColumnInput } from '../tools/alter-table-drop-column-input.js';
 import type { AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-foreign-key-input.js';
 import type { AlterTableModifyColumnDefinition, AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import type { CreateTableColumnType } from '../tools/create-table-input.js';
@@ -192,6 +193,72 @@ const VALIDATE_ALTER_TABLE_MODIFY_COLUMN_CHECKS_SQL = `
   WHERE constraints.CONSTRAINT_SCHEMA = ?
     AND constraints.TABLE_NAME = ?
     AND constraints.CONSTRAINT_TYPE = 'CHECK'
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_DROP_COLUMN_METADATA_SQL = `
+  SELECT
+    tables.TABLE_SCHEMA AS schemaName,
+    tables.TABLE_NAME AS tableName,
+    tables.TABLE_TYPE AS tableType,
+    columns.COLUMN_NAME AS columnName,
+    columns.ORDINAL_POSITION AS ordinalPosition,
+    columns.EXTRA AS extra,
+    columns.GENERATION_EXPRESSION AS generationExpression
+  FROM information_schema.TABLES AS tables
+  INNER JOIN information_schema.COLUMNS AS columns
+    ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+    AND columns.TABLE_NAME = tables.TABLE_NAME
+  WHERE tables.TABLE_SCHEMA = ?
+    AND tables.TABLE_NAME = ?
+  ORDER BY columns.ORDINAL_POSITION ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_DROP_COLUMN_STATISTICS_SQL = `
+  SELECT INDEX_NAME AS indexName, SEQ_IN_INDEX AS sequenceInIndex, COLUMN_NAME AS columnName,
+    SUB_PART AS subPart, EXPRESSION AS expression, INDEX_TYPE AS indexType
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY INDEX_NAME ASC, SEQ_IN_INDEX ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_DROP_COLUMN_CONSTRAINTS_SQL = `
+  SELECT key_columns.CONSTRAINT_NAME AS constraintName, key_columns.TABLE_NAME AS tableName,
+    key_columns.COLUMN_NAME AS columnName, key_columns.REFERENCED_TABLE_NAME AS referencedTableName,
+    key_columns.REFERENCED_COLUMN_NAME AS referencedColumnName, constraints.CONSTRAINT_TYPE AS constraintType
+  FROM information_schema.KEY_COLUMN_USAGE AS key_columns
+  INNER JOIN information_schema.TABLE_CONSTRAINTS AS constraints
+    ON constraints.CONSTRAINT_SCHEMA = key_columns.CONSTRAINT_SCHEMA
+    AND constraints.TABLE_NAME = key_columns.TABLE_NAME
+    AND constraints.CONSTRAINT_NAME = key_columns.CONSTRAINT_NAME
+  WHERE ((key_columns.TABLE_SCHEMA = ? AND key_columns.TABLE_NAME = ? AND key_columns.COLUMN_NAME = ?)
+      OR (key_columns.REFERENCED_TABLE_SCHEMA = ? AND key_columns.REFERENCED_TABLE_NAME = ? AND key_columns.REFERENCED_COLUMN_NAME = ?))
+  ORDER BY key_columns.CONSTRAINT_NAME ASC
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_DROP_COLUMN_CHECKS_SQL = `
+  SELECT checks.CONSTRAINT_NAME AS constraintName, constraints.TABLE_NAME AS tableName,
+    checks.CHECK_CLAUSE AS checkClause
+  FROM information_schema.CHECK_CONSTRAINTS AS checks
+  INNER JOIN information_schema.TABLE_CONSTRAINTS AS constraints
+    ON constraints.CONSTRAINT_SCHEMA = checks.CONSTRAINT_SCHEMA
+    AND constraints.CONSTRAINT_NAME = checks.CONSTRAINT_NAME
+  WHERE constraints.CONSTRAINT_SCHEMA = ?
+    AND constraints.TABLE_SCHEMA = ?
+    AND constraints.TABLE_NAME = ?
+    AND constraints.CONSTRAINT_TYPE = 'CHECK'
+  LIMIT ?
+`;
+
+const VALIDATE_ALTER_TABLE_DROP_COLUMN_VIEWS_SQL = `
+  SELECT VIEW_SCHEMA AS viewSchemaName, VIEW_NAME AS viewName,
+    TABLE_SCHEMA AS tableSchemaName, TABLE_NAME AS tableName
+  FROM information_schema.VIEW_TABLE_USAGE
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY VIEW_SCHEMA ASC, VIEW_NAME ASC
   LIMIT ?
 `;
 
@@ -452,6 +519,42 @@ interface AlterTableModifyColumnConstraintRow extends RowDataPacket {
 interface AlterTableModifyColumnCheckRow extends RowDataPacket {
   readonly constraintName: string;
 }
+interface AlterTableDropColumnMetadataRow extends RowDataPacket {
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly tableType: string;
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+  readonly extra: string;
+  readonly generationExpression: string | null;
+}
+interface AlterTableDropColumnStatisticRow extends RowDataPacket {
+  readonly indexName: string;
+  readonly sequenceInIndex: number;
+  readonly columnName: string | null;
+  readonly subPart: number | null;
+  readonly expression: string | null;
+  readonly indexType: string;
+}
+interface AlterTableDropColumnConstraintRow extends RowDataPacket {
+  readonly constraintName: string;
+  readonly tableName: string;
+  readonly columnName: string;
+  readonly referencedTableName: string | null;
+  readonly referencedColumnName: string | null;
+  readonly constraintType: string;
+}
+interface AlterTableDropColumnCheckRow extends RowDataPacket {
+  readonly constraintName: string;
+  readonly tableName: string;
+  readonly checkClause: string;
+}
+interface AlterTableDropColumnViewRow extends RowDataPacket {
+  readonly viewSchemaName: string;
+  readonly viewName: string;
+  readonly tableSchemaName: string;
+  readonly tableName: string;
+}
 interface ForeignKeyTableRow extends RowDataPacket {
   readonly schemaName: string;
   readonly tableName: string;
@@ -635,6 +738,21 @@ export class AlterTableModifyColumnVerificationError extends Error {
     this.name = 'AlterTableModifyColumnVerificationError';
   }
 }
+export type AlterTableDropColumnMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID';
+export class AlterTableDropColumnMetadataError extends Error {
+  readonly code: AlterTableDropColumnMetadataCode;
+  constructor(code: AlterTableDropColumnMetadataCode, message: string) {
+    super(message);
+    this.name = 'AlterTableDropColumnMetadataError';
+    this.code = code;
+  }
+}
+export class AlterTableDropColumnVerificationError extends Error {
+  constructor(message = 'The dropped column could not be verified.') {
+    super(message);
+    this.name = 'AlterTableDropColumnVerificationError';
+  }
+}
 export type AlterTableRenameColumnMetadataCode =
   'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
 export class AlterTableRenameColumnMetadataError extends Error {
@@ -710,6 +828,9 @@ const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column alre
 const ALTER_TABLE_MODIFY_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested column definition.';
 const ALTER_TABLE_MODIFY_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE MODIFY COLUMN is supported for base tables only.';
 const ALTER_TABLE_MODIFY_COLUMN_METADATA_COLUMN_INVALID = 'The current column definition is unknown, incompatible, or has an unsupported dependency.';
+const ALTER_TABLE_DROP_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested column metadata.';
+const ALTER_TABLE_DROP_COLUMN_METADATA_TABLE_INVALID = 'ALTER TABLE DROP COLUMN is supported for base tables only.';
+const ALTER_TABLE_DROP_COLUMN_METADATA_COLUMN_INVALID = 'The requested column is unknown, generated, or has an unresolved dependency.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE RENAME COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_RENAME_COLUMN_METADATA_COLUMN_INVALID = 'The source column is unknown or inaccessible.';
@@ -1863,6 +1984,223 @@ export async function validateRenameTableMetadata(mysql: ConnectionLayer, schema
   if (source === undefined || source.tableType !== 'BASE TABLE')
     throw new RenameTableMetadataError('MYSQL_DDL_TABLE_INVALID', RENAME_TABLE_METADATA_SOURCE_INVALID);
   if (destination !== undefined) throw new RenameTableMetadataError('MYSQL_DDL_TABLE_EXISTS', RENAME_TABLE_METADATA_DESTINATION_EXISTS);
+}
+
+function alterTableDropColumnMetadataError(code: AlterTableDropColumnMetadataCode): AlterTableDropColumnMetadataError {
+  return new AlterTableDropColumnMetadataError(
+    code,
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? ALTER_TABLE_DROP_COLUMN_METADATA_TABLE_INVALID
+      : code === 'MYSQL_DDL_COLUMN_INVALID'
+        ? ALTER_TABLE_DROP_COLUMN_METADATA_COLUMN_INVALID
+        : ALTER_TABLE_DROP_COLUMN_METADATA_UNAVAILABLE,
+  );
+}
+
+function validDropColumnMetadataRows(rows: readonly AlterTableDropColumnMetadataRow[], input: AlterTableDropColumnInput): void {
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS)
+    throw alterTableDropColumnMetadataError(rows.length === 0 ? 'MYSQL_DDL_TABLE_INVALID' : 'MYSQL_DDL_METADATA_INVALID');
+  const first = rows[0];
+  if (first === undefined || typeof first !== 'object' || first === null) throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const names = new Set<string>();
+  const ordinals = new Set<number>();
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.tableType) ||
+      !isNonEmptyString(row.columnName) ||
+      !Number.isInteger(row.ordinalPosition) ||
+      row.ordinalPosition <= 0 ||
+      typeof row.extra !== 'string' ||
+      (row.generationExpression !== null && typeof row.generationExpression !== 'string') ||
+      normalizedIdentifierName(row.schemaName) !== normalizedIdentifierName(input.schema) ||
+      normalizedIdentifierName(row.tableName) !== normalizedIdentifierName(input.table) ||
+      row.tableType !== first.tableType ||
+      names.has(normalizedIdentifierName(row.columnName)) ||
+      ordinals.has(row.ordinalPosition)
+    )
+      throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    names.add(normalizedIdentifierName(row.columnName));
+    ordinals.add(row.ordinalPosition);
+  }
+  if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1))
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  if (first.tableType !== 'BASE TABLE') throw alterTableDropColumnMetadataError('MYSQL_DDL_TABLE_INVALID');
+  const matches = rows.filter((row) => normalizedIdentifierName(row.columnName) === normalizedIdentifierName(input.column));
+  if (matches.length !== 1) throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  if (/(^|\s)(?:virtual|stored)\s+generated(?=\s|$)/iu.test(matches[0]?.extra ?? ''))
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  if (rows.some((row) => row.generationExpression !== null && row.generationExpression.length > 0))
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+}
+
+function validDropColumnStatistics(rows: readonly AlterTableDropColumnStatisticRow[], input: AlterTableDropColumnInput): void {
+  if (!Array.isArray(rows) || rows.length > MAX_INDEX_METADATA_RESULTS) throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.indexName) ||
+      !Number.isInteger(row.sequenceInIndex) ||
+      row.sequenceInIndex <= 0 ||
+      (row.columnName !== null && !isNonEmptyString(row.columnName)) ||
+      (row.subPart !== null && (!Number.isInteger(row.subPart) || row.subPart <= 0)) ||
+      (row.expression !== null && !isNonEmptyString(row.expression)) ||
+      !isNonEmptyString(row.indexType)
+    )
+      throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    if (row.expression !== null || normalizedIdentifierName(row.columnName ?? '') === normalizedIdentifierName(input.column))
+      throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+}
+
+function validDropColumnConstraints(rows: readonly AlterTableDropColumnConstraintRow[]): void {
+  if (!Array.isArray(rows) || rows.length > MAX_METADATA_RESULTS) throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.constraintName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.columnName) ||
+      (row.referencedTableName !== null && !isNonEmptyString(row.referencedTableName)) ||
+      (row.referencedColumnName !== null && !isNonEmptyString(row.referencedColumnName)) ||
+      !isNonEmptyString(row.constraintType)
+    )
+      throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+}
+
+function validDropColumnChecks(rows: readonly AlterTableDropColumnCheckRow[], input: AlterTableDropColumnInput): void {
+  if (!Array.isArray(rows) || rows.length > MAX_METADATA_RESULTS) throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.constraintName) ||
+      row.tableName !== input.table ||
+      !isNonEmptyString(row.checkClause)
+    )
+      throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+}
+
+function validDropColumnViews(rows: readonly AlterTableDropColumnViewRow[], input: AlterTableDropColumnInput): void {
+  if (!Array.isArray(rows) || rows.length > MAX_METADATA_RESULTS) throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  for (const row of rows) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.viewSchemaName) ||
+      !isNonEmptyString(row.viewName) ||
+      !isNonEmptyString(row.tableSchemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      normalizedIdentifierName(row.tableSchemaName) !== normalizedIdentifierName(input.schema) ||
+      normalizedIdentifierName(row.tableName) !== normalizedIdentifierName(input.table)
+    )
+      throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID');
+  }
+}
+
+/** @internal Reads bounded metadata and known dependencies before one DROP COLUMN attempt. */
+export async function validateAlterTableDropColumnMetadata(mysql: ConnectionLayer, input: AlterTableDropColumnInput): Promise<void> {
+  let rows: AlterTableDropColumnMetadataRow[];
+  let statistics: AlterTableDropColumnStatisticRow[];
+  let constraints: AlterTableDropColumnConstraintRow[];
+  let checks: AlterTableDropColumnCheckRow[];
+  let views: AlterTableDropColumnViewRow[];
+  try {
+    [rows] = await mysql.query<AlterTableDropColumnMetadataRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_COLUMN_METADATA_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [statistics] = await mysql.query<AlterTableDropColumnStatisticRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_COLUMN_STATISTICS_SQL), [
+      input.schema,
+      input.table,
+      MAX_INDEX_METADATA_RESULTS + 1,
+    ]);
+    [constraints] = await mysql.query<AlterTableDropColumnConstraintRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_COLUMN_CONSTRAINTS_SQL), [
+      input.schema,
+      input.table,
+      input.column,
+      input.schema,
+      input.table,
+      input.column,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [checks] = await mysql.query<AlterTableDropColumnCheckRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_COLUMN_CHECKS_SQL), [
+      input.schema,
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [views] = await mysql.query<AlterTableDropColumnViewRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_COLUMN_VIEWS_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw alterTableDropColumnMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  validDropColumnMetadataRows(rows, input);
+  validDropColumnStatistics(statistics, input);
+  validDropColumnConstraints(constraints);
+  validDropColumnChecks(checks, input);
+  validDropColumnViews(views, input);
+}
+
+/** @internal Confirms that the target table remains a base table and the dropped column is absent. */
+export async function verifyAlterTableDropColumnMetadata(mysql: ConnectionLayer, input: AlterTableDropColumnInput): Promise<void> {
+  try {
+    const [rows] = await mysql.query<AlterTableDropColumnMetadataRow[]>(queryOptions(mysql, VALIDATE_ALTER_TABLE_DROP_COLUMN_METADATA_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_METADATA_RESULTS) throw new AlterTableDropColumnVerificationError();
+    const first = rows[0];
+    if (first === undefined || typeof first !== 'object' || first === null || first.tableType !== 'BASE TABLE')
+      throw new AlterTableDropColumnVerificationError();
+    const names = new Set<string>();
+    const ordinals = new Set<number>();
+    for (const row of rows) {
+      if (
+        typeof row !== 'object' ||
+        row === null ||
+        !isNonEmptyString(row.schemaName) ||
+        !isNonEmptyString(row.tableName) ||
+        row.schemaName !== input.schema ||
+        row.tableName !== input.table ||
+        row.tableType !== 'BASE TABLE' ||
+        !isNonEmptyString(row.columnName) ||
+        !Number.isInteger(row.ordinalPosition) ||
+        row.ordinalPosition <= 0 ||
+        typeof row.extra !== 'string' ||
+        (row.generationExpression !== null && typeof row.generationExpression !== 'string') ||
+        names.has(normalizedIdentifierName(row.columnName)) ||
+        ordinals.has(row.ordinalPosition)
+      )
+        throw new AlterTableDropColumnVerificationError();
+      names.add(normalizedIdentifierName(row.columnName));
+      ordinals.add(row.ordinalPosition);
+    }
+    if ([...ordinals].sort((left, right) => left - right).some((ordinal, position) => ordinal !== position + 1))
+      throw new AlterTableDropColumnVerificationError();
+    if (rows.some((row) => row.generationExpression !== null && row.generationExpression.length > 0))
+      throw new AlterTableDropColumnVerificationError();
+    if (rows.some((row) => normalizedIdentifierName(row.columnName) === normalizedIdentifierName(input.column)))
+      throw new AlterTableDropColumnVerificationError();
+  } catch (error) {
+    if (error instanceof AlterTableDropColumnVerificationError) throw error;
+    throw new AlterTableDropColumnVerificationError();
+  }
 }
 
 function foreignKeyError(code: AlterTableAddForeignKeyMetadataCode): AlterTableAddForeignKeyMetadataError {

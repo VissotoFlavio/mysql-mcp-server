@@ -12,6 +12,8 @@ const enabled =
   process.env.MYSQL_INTEGRATION_TEST === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_TEST === 'true' &&
   process.env.MYSQL_DDL_ENABLED === 'true' &&
+  process.env.MYSQL_DDL_DROP_COLUMN_ENABLED === 'true' &&
+  process.env.MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE === 'true' &&
   process.env.MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE === 'true' &&
   process.env.MYSQL_DML_ENABLED === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_CONFIRM === 'isolated-database-schema';
@@ -369,6 +371,28 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     };
     assert.ok(afterRename.columns.some((column) => column.columnName === 'renamed_note' && column.dataType === 'varchar' && column.isNullable));
     assert.ok(!afterRename.columns.some((column) => column.columnName === 'note'));
+
+    const dropColumnResponse = await request('tools/call', {
+      name: 'alter_table_drop_column',
+      arguments: {
+        schema,
+        table,
+        column: 'renamed_note',
+        reason: 'Remove the isolated disposable column after verification',
+        confirmation: 'DROP_COLUMN',
+      },
+    });
+    const dropColumnResult = dropColumnResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string; column: string };
+    };
+    assert.equal(dropColumnResult.operation, 'alter_table_drop_column');
+    assert.deepEqual(dropColumnResult.target, { schema, table, column: 'renamed_note' });
+    const afterDropColumnResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    const afterDropColumn = afterDropColumnResponse.result?.structuredContent as {
+      columns: readonly { columnName: string }[];
+    };
+    assert.ok(!afterDropColumn.columns.some((column) => column.columnName === 'renamed_note'));
 
     await application.close();
     applicationClosed = true;

@@ -29,6 +29,8 @@ export interface ConnectionConfig {
   readonly ddlEnabled: boolean;
   readonly createSchemaEnabled: boolean;
   readonly dropViewMetadataComplete: boolean;
+  readonly dropColumnEnabled: boolean;
+  readonly dropColumnMetadataComplete: boolean;
   readonly poolLimit: number;
   readonly queueLimit: number;
   readonly connectTimeoutMs: number;
@@ -208,6 +210,8 @@ export function loadConnectionConfig(
 
   const ddlEnabled = strictBooleanValue(environment, 'MYSQL_DDL_ENABLED', false);
   const createSchemaOptIn = strictBooleanValue(environment, 'MYSQL_DDL_CREATE_SCHEMA_ENABLED', false);
+  const dropColumnOptIn = strictBooleanValue(environment, 'MYSQL_DDL_DROP_COLUMN_ENABLED', false);
+  const dropColumnMetadataComplete = strictBooleanValue(environment, 'MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE', false);
 
   return Object.freeze({
     host: validateHost(requiredValue(environment, 'MYSQL_HOST')),
@@ -219,6 +223,8 @@ export function loadConnectionConfig(
     ddlEnabled,
     createSchemaEnabled: ddlEnabled && createSchemaOptIn,
     dropViewMetadataComplete: strictBooleanValue(environment, 'MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE', false),
+    dropColumnEnabled: ddlEnabled && dropColumnOptIn,
+    dropColumnMetadataComplete: ddlEnabled && dropColumnOptIn && dropColumnMetadataComplete,
     poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
     queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),
     connectTimeoutMs: integerValue(environment, 'MYSQL_CONNECT_TIMEOUT_MS', DEFAULTS.connectTimeoutMs, { min: 100, max: 60_000 }),

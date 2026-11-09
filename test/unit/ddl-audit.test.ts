@@ -3,7 +3,12 @@ import test from 'node:test';
 
 import { createDdlAuditAttempt, createDdlRequestHash, toSafeDdlOutcome } from '../../src/db/ddl-audit.js';
 import { classifyDdlDriverCode, sanitizeDdlDriverCode } from '../../src/db/ddl-error-codes.js';
-import { AlterTableModifyColumnMetadataError, AlterTableModifyColumnVerificationError } from '../../src/db/metadata.js';
+import {
+  AlterTableDropColumnMetadataError,
+  AlterTableDropColumnVerificationError,
+  AlterTableModifyColumnMetadataError,
+  AlterTableModifyColumnVerificationError,
+} from '../../src/db/metadata.js';
 import { ConnectionError, createConnectionLayer, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from '../../src/db/pool.js';
 import { DdlPolicyError } from '../../src/db/sql-policy.js';
 
@@ -105,6 +110,20 @@ test('audits DROP FOREIGN KEY with only the named target and no SQL', () => {
   assert.doesNotMatch(lines.join('\\n'), /ALTER TABLE|DROP FOREIGN KEY/iu);
 });
 
+test('audits DROP COLUMN with one sanitized target and no SQL or confirmation text', () => {
+  const lines: string[] = [];
+  const reason = 'Remove the obsolete label because it is no longer used.';
+  const request = { schema: 'app', table: 'orders', column: 'obsolete_label', reason, confirmation: 'DROP_COLUMN' };
+  const attempt = createDdlAuditAttempt(request, { writer: (line) => lines.push(line), operationId: () => 'drop-column-op', now: () => 1_000 });
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'alter_table_drop_column');
+  assert.deepEqual(completed.target, { schema: 'app', table: 'orders', column: 'obsolete_label' });
+  assert.equal(completed.columnCount, 1);
+  assert.equal(completed.requestHash, createDdlRequestHash(request));
+  assert.doesNotMatch(lines.join('\n'), /ALTER TABLE|DROP COLUMN/iu);
+});
+
 test('audits RENAME TABLE with sanitized source and destination metadata', () => {
   const lines: string[] = [];
   const attempt = createDdlAuditAttempt(
@@ -186,6 +205,8 @@ test('classifies DDL failures without preserving driver messages', () => {
     [new AlterTableModifyColumnMetadataError('MYSQL_DDL_TABLE_INVALID', 'internal'), false, 'MYSQL_DDL_TABLE_INVALID', undefined],
     [new AlterTableModifyColumnMetadataError('MYSQL_DDL_COLUMN_INVALID', 'internal'), false, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
     [new AlterTableModifyColumnVerificationError(), false, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
+    [new AlterTableDropColumnMetadataError('MYSQL_DDL_COLUMN_INVALID', 'internal'), false, 'MYSQL_DDL_STRUCTURE_INVALID', undefined],
+    [new AlterTableDropColumnVerificationError(), true, 'MYSQL_DDL_OUTCOME_UNKNOWN', 'VERIFY_STATE_BEFORE_RETRYING'],
   ];
   for (const [error, submitted, code, retryAdvice] of cases) {
     const outcome = toSafeDdlOutcome(error, submitted);

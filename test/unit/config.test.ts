@@ -18,6 +18,8 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.ddlEnabled, false);
   assert.equal(config.createSchemaEnabled, false);
   assert.equal(config.dropViewMetadataComplete, false);
+  assert.equal(config.dropColumnEnabled, false);
+  assert.equal(config.dropColumnMetadataComplete, false);
   assert.equal(config.tls, undefined);
 });
 
@@ -58,6 +60,33 @@ test('loads the DROP VIEW metadata completeness attestation only for explicit bo
   assert.throws(
     () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE: 'TRUE' })),
     /MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE must be true or false/,
+  );
+});
+
+test('loads the separate DROP COLUMN opt-in only when DDL is enabled', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_COLUMN_ENABLED: 'true' })).dropColumnEnabled, false);
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_ENABLED: 'true' })).dropColumnEnabled, true);
+  assert.equal(
+    loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_ENABLED: 'false' })).dropColumnEnabled,
+    false,
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_COLUMN_ENABLED: 'TRUE' })),
+    /MYSQL_DDL_DROP_COLUMN_ENABLED must be true or false/,
+  );
+});
+
+test('loads the DROP COLUMN metadata completeness attestation only with the destructive opt-in', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE: 'true' })).dropColumnMetadataComplete, false);
+  assert.equal(
+    loadConnectionConfig(
+      validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_ENABLED: 'true', MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE: 'true' }),
+    ).dropColumnMetadataComplete,
+    true,
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE: 'TRUE' })),
+    /MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE must be true or false/,
   );
 });
 

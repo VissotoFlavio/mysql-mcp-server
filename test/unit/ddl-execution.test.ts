@@ -8,6 +8,7 @@ import {
   createCreateIndexStatement,
   createCreateTableStatement,
   createCreateUniqueIndexStatement,
+  createAlterTableDropColumnStatement,
   createRenameTableStatement,
   DdlDisabledError,
   type ConnectionLayer,
@@ -217,6 +218,43 @@ test('executes only a capability-minted canonical same-schema RENAME TABLE and a
   assert.deepEqual(completed.target, { schema: 'app', table: 'accounts', newTable: 'customers' });
   assert.equal(completed.result, 'succeeded');
   assert.doesNotMatch(auditLines.join('\n'), /RENAME TABLE|must not escape/);
+  await layer.close();
+});
+
+test('executes only the capability-bound DROP COLUMN statement with the separate opt-in', async () => {
+  let executeCalls = 0;
+  const layer = createConnectionLayer({
+    environment: validEnvironment({
+      MYSQL_DDL_ENABLED: 'true',
+      MYSQL_DDL_DROP_COLUMN_ENABLED: 'true',
+      MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE: 'true',
+    }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute(options: { sql: string }) {
+            executeCalls += 1;
+            assert.equal(options.sql, 'ALTER TABLE `app`.`accounts` DROP COLUMN `obsolete_label`');
+            return [{ affectedRows: 0, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+  const statement = createAlterTableDropColumnStatement({
+    schema: 'app',
+    table: 'accounts',
+    column: 'obsolete_label',
+    reason: 'Remove the obsolete label.',
+    confirmation: 'DROP_COLUMN',
+  });
+  assert.deepEqual(await layer.ddl.executeAlterTableDropColumn(statement), { warningStatus: 0 });
+  await assert.rejects(() => layer.ddl.executeCreateTable(statement as never), DdlPolicyError);
+  assert.equal(executeCalls, 1);
   await layer.close();
 });
 
