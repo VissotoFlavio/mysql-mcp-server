@@ -8,6 +8,7 @@ import { normalizeAlterTableDropForeignKeyInput, type AlterTableDropForeignKeyIn
 import { normalizeAlterTableModifyColumnInput, type AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput } from '../tools/alter-table-rename-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
+import { normalizeCreateSchemaInput, type CreateSchemaInput } from '../tools/create-schema-input.js';
 import { normalizeCreateTableInput, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
@@ -23,6 +24,7 @@ import {
   buildAlterTableModifyColumnStatement,
   buildAlterTableRenameColumnStatement,
   buildCreateIndexStatement,
+  buildCreateSchemaStatement,
   buildCreateTableStatement,
   buildCreateViewStatement,
   buildCreateUniqueIndexStatement,
@@ -49,6 +51,7 @@ import {
   assertAlterTableModifyColumnSql,
   assertAlterTableRenameColumnSql,
   assertCreateIndexSql,
+  assertCreateSchemaSql,
   assertCreateUniqueIndexSql,
   assertDropIndexSql,
   assertDropViewSql,
@@ -324,14 +327,14 @@ export type CreateTableExecutionResult = Readonly<{
   warningStatus: number;
 }>;
 
-function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult {
+function normalizeCreateTableResult(result: unknown, expectedAffectedRows = 0): CreateTableExecutionResult {
   try {
     if (typeof result !== 'object' || result === null || !Object.hasOwn(result, 'affectedRows') || !Object.hasOwn(result, 'warningStatus')) {
       throw new DdlResultError();
     }
     const record = result as Record<string, unknown>;
     if (
-      record.affectedRows !== 0 ||
+      record.affectedRows !== expectedAffectedRows ||
       typeof record.warningStatus !== 'number' ||
       !Number.isSafeInteger(record.warningStatus) ||
       record.warningStatus < 0
@@ -347,6 +350,7 @@ function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult
 
 declare const dmlStatementBrand: unique symbol;
 declare const createTableStatementBrand: unique symbol;
+declare const createSchemaStatementBrand: unique symbol;
 declare const createViewStatementBrand: unique symbol;
 declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
@@ -365,6 +369,9 @@ export interface DmlStatement {
 
 export interface CreateTableStatement {
   readonly [createTableStatementBrand]: true;
+}
+export interface CreateSchemaStatement {
+  readonly [createSchemaStatementBrand]: true;
 }
 export interface CreateViewStatement {
   readonly [createViewStatementBrand]: true;
@@ -406,6 +413,8 @@ export interface DmlConnectionLayer {
 }
 
 export interface DdlConnectionLayer {
+  executeCreateSchema(statement: CreateSchemaStatement): Promise<CreateTableExecutionResult>;
+  executeCreateSchemaWithOperationId(statement: CreateSchemaStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult>;
   executeCreateTableWithOperationId(statement: CreateTableStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeCreateView(statement: CreateViewStatement): Promise<CreateTableExecutionResult>;
@@ -454,6 +463,7 @@ export interface ConnectionLayer {
 export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
+  readonly createSchemaEnabled: boolean;
   readonly dropViewMetadataComplete: boolean;
   readonly dml: DmlConnectionLayer;
   readonly ddl: DdlConnectionLayer;
@@ -467,6 +477,7 @@ interface DmlStatementData {
 
 const dmlStatementRegistry = new WeakMap<DmlStatement, DmlStatementData>();
 type DdlStatement =
+  | CreateSchemaStatement
   | CreateTableStatement
   | CreateViewStatement
   | CreateIndexStatement
@@ -480,6 +491,7 @@ type DdlStatement =
   | AlterTableRenameColumnStatement
   | RenameTableStatement;
 type DdlStatementData =
+  | Readonly<{ operation: 'create_schema'; sql: string; input: CreateSchemaInput }>
   | Readonly<{ operation: 'create_table'; sql: string; input: CreateTableInput }>
   | Readonly<{ operation: 'create_view'; sql: string; input: CreateViewInput }>
   | Readonly<{ operation: 'create_index'; sql: string; input: CreateIndexInput }>
@@ -493,6 +505,21 @@ type DdlStatementData =
   | Readonly<{ operation: 'alter_table_rename_column'; sql: string; input: AlterTableRenameColumnInput }>
   | Readonly<{ operation: 'rename_table'; sql: string; input: RenameTableInput }>;
 const ddlStatementRegistry = new WeakMap<DdlStatement, DdlStatementData>();
+
+/** Creates the capability-bound form of the option-limited CREATE SCHEMA statement. */
+export function createCreateSchemaStatement(input: CreateSchemaInput): CreateSchemaStatement {
+  let sql: string;
+  let normalized: CreateSchemaInput;
+  try {
+    normalized = normalizeCreateSchemaInput(input);
+    sql = buildCreateSchemaStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as CreateSchemaStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'create_schema', sql, input: normalized }));
+  return statement;
+}
 
 /** Creates the only executable DDL capability, from a freshly normalized structured input. */
 export function createCreateTableStatement(input: CreateTableInput): CreateTableStatement {
@@ -964,8 +991,10 @@ export function createConnectionLayer({
     let submitted = false;
     try {
       if (!config.ddlEnabled) throw new DdlDisabledError();
+      if (expected === 'create_schema' && !config.createSchemaEnabled) throw new DdlDisabledError();
       if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
-      if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
+      if (statementData.operation === 'create_schema') assertCreateSchemaSql(statementData.sql);
+      else if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
       else if (statementData.operation === 'create_view') assertCreateViewSql(statementData.sql);
       else if (statementData.operation === 'create_index') assertCreateIndexSql(statementData.sql);
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
@@ -980,7 +1009,7 @@ export function createConnectionLayer({
       audit.markSubmitted();
       submitted = true;
       const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
-      const normalizedResult = normalizeCreateTableResult(result);
+      const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' ? 1 : 0);
       if (verify !== undefined) await verify();
       audit.emit();
       return [normalizedResult, audit.operationId];
@@ -997,6 +1026,11 @@ export function createConnectionLayer({
   }
 
   const ddl: DdlConnectionLayer = Object.freeze({
+    async executeCreateSchema(statement: CreateSchemaStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'create_schema');
+      return result;
+    },
+    executeCreateSchemaWithOperationId: (statement: CreateSchemaStatement) => executeDdlWithOperationId(statement, 'create_schema'),
     async executeCreateTable(statement: CreateTableStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'create_table');
       return result;
@@ -1069,6 +1103,7 @@ export function createConnectionLayer({
   return Object.freeze({
     dmlEnabled: config.dmlEnabled,
     ddlEnabled: config.ddlEnabled,
+    createSchemaEnabled: config.createSchemaEnabled,
     dropViewMetadataComplete: config.dropViewMetadataComplete,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,

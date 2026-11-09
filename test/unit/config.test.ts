@@ -16,6 +16,7 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.queryTimeoutMs, 30_000);
   assert.equal(config.dmlEnabled, false);
   assert.equal(config.ddlEnabled, false);
+  assert.equal(config.createSchemaEnabled, false);
   assert.equal(config.dropViewMetadataComplete, false);
   assert.equal(config.tls, undefined);
 });
@@ -33,6 +34,22 @@ test('loads the DDL opt-in flag only for explicit boolean values', () => {
   for (const invalid of ['TRUE', ' true ', '\ttrue\n', '']) {
     assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: invalid })), /MYSQL_DDL_ENABLED must be true or false/);
   }
+});
+
+test('loads the strict CREATE SCHEMA opt-in only for explicit boolean values', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'false' })).createSchemaEnabled, false);
+  assert.equal(
+    loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'false', MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'true' })).createSchemaEnabled,
+    false,
+  );
+  assert.equal(
+    loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'true' })).createSchemaEnabled,
+    true,
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'TRUE' })),
+    /MYSQL_DDL_CREATE_SCHEMA_ENABLED must be true or false/,
+  );
 });
 
 test('loads the DROP VIEW metadata completeness attestation only for explicit boolean values', () => {

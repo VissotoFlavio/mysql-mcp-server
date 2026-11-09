@@ -17,6 +17,13 @@ const LIST_SCHEMAS_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_CREATE_SCHEMA_METADATA_SQL = `
+  SELECT SCHEMA_NAME AS schemaName
+  FROM information_schema.SCHEMATA
+  WHERE SCHEMA_NAME = ?
+  LIMIT ?
+`;
+
 const LIST_TABLES_SQL = `
   SELECT TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType
   FROM information_schema.TABLES
@@ -557,6 +564,17 @@ export class CreateViewMetadataError extends Error {
   }
 }
 
+export type CreateSchemaMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_SCHEMA_EXISTS';
+export class CreateSchemaMetadataError extends Error {
+  constructor(
+    readonly code: CreateSchemaMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CreateSchemaMetadataError';
+  }
+}
+
 export type DropIndexMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
 export class DropIndexMetadataError extends Error {
   readonly code: DropIndexMetadataCode;
@@ -678,6 +696,8 @@ const CREATE_VIEW_METADATA_UNAVAILABLE = 'Unable to validate the requested view 
 const CREATE_VIEW_METADATA_SOURCE_INVALID = 'The source must be an existing base table.';
 const CREATE_VIEW_METADATA_COLUMN_INVALID = 'One or more view columns are unknown or invisible.';
 const CREATE_VIEW_METADATA_EXISTS = 'The target view already exists.';
+const CREATE_SCHEMA_METADATA_UNAVAILABLE = 'Unable to validate the requested schema metadata.';
+const CREATE_SCHEMA_METADATA_EXISTS = 'The target schema already exists.';
 const DROP_INDEX_METADATA_UNAVAILABLE = 'Unable to validate the requested index metadata.';
 const DROP_INDEX_METADATA_BASE_TABLE_ONLY = 'DROP INDEX metadata is supported for base tables only.';
 const DROP_INDEX_METADATA_NOT_REMOVABLE = 'The named index is not a removable secondary index.';
@@ -1123,6 +1143,23 @@ export async function validateCreateViewMetadata(
     throw new CreateViewMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_VIEW_METADATA_UNAVAILABLE);
   if (requestedColumns.some((column) => !visibleNames.has(column)))
     throw new CreateViewMetadataError('MYSQL_DDL_COLUMN_INVALID', CREATE_VIEW_METADATA_COLUMN_INVALID);
+}
+
+/** @internal Reads bounded information_schema metadata before one CREATE SCHEMA attempt. */
+export async function validateCreateSchemaMetadata(mysql: ConnectionLayer, schema: string): Promise<void> {
+  let rows: SchemaRow[];
+  try {
+    [rows] = await mysql.query<SchemaRow[]>(queryOptions(mysql, VALIDATE_CREATE_SCHEMA_METADATA_SQL), [schema, 2]);
+  } catch {
+    throw new CreateSchemaMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_SCHEMA_METADATA_UNAVAILABLE);
+  }
+  if (!Array.isArray(rows) || rows.length > 1) throw new CreateSchemaMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_SCHEMA_METADATA_UNAVAILABLE);
+  for (const row of rows) {
+    if (typeof row !== 'object' || row === null || row.schemaName !== schema) {
+      throw new CreateSchemaMetadataError('MYSQL_DDL_METADATA_INVALID', CREATE_SCHEMA_METADATA_UNAVAILABLE);
+    }
+  }
+  if (rows.length === 1) throw new CreateSchemaMetadataError('MYSQL_DDL_SCHEMA_EXISTS', CREATE_SCHEMA_METADATA_EXISTS);
 }
 
 /** @internal Reads bounded metadata and duplicate existence before one CREATE UNIQUE INDEX attempt. */

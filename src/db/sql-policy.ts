@@ -2,6 +2,12 @@ import sqlParser from 'node-sql-parser';
 
 import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
 import { MAX_CREATE_INDEX_COLUMNS } from '../tools/create-index-input.js';
+import {
+  isCreateSchemaCharacterSet,
+  isCreateSchemaCollation,
+  isCreateSchemaCollationForCharacterSet,
+  type CreateSchemaCharacterSet,
+} from '../tools/create-schema-input.js';
 import { MAX_CREATE_TABLE_COLUMNS, MAX_CREATE_TABLE_IDENTIFIER_LENGTH } from '../tools/create-table-input.js';
 import { MAX_CREATE_VIEW_COLUMNS } from '../tools/create-view-input.js';
 
@@ -30,7 +36,7 @@ export class DdlPolicyError extends Error {
   readonly code = 'MYSQL_SQL_NOT_DDL';
 
   constructor() {
-    super('Only one internally generated CREATE TABLE statement is allowed.');
+    super('Only one internally generated controlled DDL statement is allowed.');
     this.name = 'DdlPolicyError';
   }
 }
@@ -324,6 +330,26 @@ export function assertCreateTableSql(sql: string): void {
   ) {
     failDdlPolicy();
   }
+}
+
+/** Defense in depth for the canonical, option-limited CREATE SCHEMA grammar. */
+export function assertCreateSchemaSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'CREATE SCHEMA ');
+  [, index] = readIdentifier(sql, index);
+  if (index === sql.length) return;
+  index = readExpected(sql, index, ' DEFAULT CHARACTER SET ');
+  const [charset, afterCharset] = readMetadataName(sql, index);
+  if (!isCreateSchemaCharacterSet(charset)) failDdlPolicy();
+  index = afterCharset;
+  if (index !== sql.length) {
+    index = readExpected(sql, index, ' COLLATE ');
+    const [collation, afterCollation] = readMetadataName(sql, index);
+    if (!isCreateSchemaCollation(collation) || !isCreateSchemaCollationForCharacterSet(collation, charset as CreateSchemaCharacterSet))
+      failDdlPolicy();
+    index = afterCollation;
+  }
+  if (index !== sql.length) failDdlPolicy();
 }
 
 /** Defense in depth for the canonical projection-only, invoker-security CREATE VIEW grammar. */

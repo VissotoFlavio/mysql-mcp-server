@@ -27,6 +27,7 @@ export interface ConnectionConfig {
   readonly password: string;
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
+  readonly createSchemaEnabled: boolean;
   readonly dropViewMetadataComplete: boolean;
   readonly poolLimit: number;
   readonly queueLimit: number;
@@ -205,6 +206,9 @@ export function loadConnectionConfig(
     throw configurationError('environment must be an object.');
   }
 
+  const ddlEnabled = strictBooleanValue(environment, 'MYSQL_DDL_ENABLED', false);
+  const createSchemaOptIn = strictBooleanValue(environment, 'MYSQL_DDL_CREATE_SCHEMA_ENABLED', false);
+
   return Object.freeze({
     host: validateHost(requiredValue(environment, 'MYSQL_HOST')),
     port: integerValue(environment, 'MYSQL_PORT', DEFAULTS.port, { min: 1, max: 65_535 }),
@@ -212,7 +216,8 @@ export function loadConnectionConfig(
     user: validateIdentifier(requiredValue(environment, 'MYSQL_USER'), 'MYSQL_USER'),
     password: requiredValue(environment, 'MYSQL_PASSWORD', true),
     dmlEnabled: booleanValue(environment, 'MYSQL_DML_ENABLED', false),
-    ddlEnabled: strictBooleanValue(environment, 'MYSQL_DDL_ENABLED', false),
+    ddlEnabled,
+    createSchemaEnabled: ddlEnabled && createSchemaOptIn,
     dropViewMetadataComplete: strictBooleanValue(environment, 'MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE', false),
     poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
     queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),

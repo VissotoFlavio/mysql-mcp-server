@@ -4,6 +4,7 @@ import { normalizeAlterTableDropForeignKeyInput, type AlterTableDropForeignKeyIn
 import { normalizeAlterTableModifyColumnInput, type AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput } from '../tools/alter-table-rename-column-input.js';
 import { normalizeCreateIndexInput, type CreateIndexInput } from '../tools/create-index-input.js';
+import { normalizeCreateSchemaInput, type CreateSchemaInput } from '../tools/create-schema-input.js';
 import { normalizeCreateTableInput, type CreateTableColumn, type CreateTableColumnType, type CreateTableInput } from '../tools/create-table-input.js';
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
@@ -12,6 +13,9 @@ import { normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-i
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
 export interface BuiltCreateTableStatement {
+  readonly sql: string;
+}
+export interface BuiltCreateSchemaStatement {
   readonly sql: string;
 }
 export interface BuiltCreateViewStatement {
@@ -104,6 +108,14 @@ export function buildCreateTableStatement(input: CreateTableInput): BuiltCreateT
   const primaryKey = normalized.primaryKey.map(escapeIdentifier).join(', ');
   const sql = `CREATE TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} (${[...columns, `PRIMARY KEY (${primaryKey})`].join(', ')})`;
   return Object.freeze({ sql });
+}
+
+/** Produces the only supported CREATE SCHEMA form, without IF NOT EXISTS or arbitrary options. */
+export function buildCreateSchemaStatement(input: CreateSchemaInput): BuiltCreateSchemaStatement {
+  const normalized = normalizeCreateSchemaInput(input);
+  const charset = normalized.charset === undefined ? '' : ` DEFAULT CHARACTER SET ${normalized.charset}`;
+  const collation = normalized.collation === undefined ? '' : ` COLLATE ${normalized.collation}`;
+  return Object.freeze({ sql: `CREATE SCHEMA ${escapeIdentifier(normalized.schema)}${charset}${collation}` });
 }
 
 /** Produces the only supported view form: a same-schema, plain named-column projection. */
