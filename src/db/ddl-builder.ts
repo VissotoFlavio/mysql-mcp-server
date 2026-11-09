@@ -1,5 +1,6 @@
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeAlterTableAddForeignKeyInput, type AlterTableAddForeignKeyInput } from '../tools/alter-table-add-foreign-key-input.js';
+import { normalizeAlterTableDropColumnInput, type AlterTableDropColumnInput } from '../tools/alter-table-drop-column-input.js';
 import { normalizeAlterTableDropForeignKeyInput, type AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-foreign-key-input.js';
 import { normalizeAlterTableModifyColumnInput, type AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput } from '../tools/alter-table-rename-column-input.js';
@@ -49,6 +50,9 @@ export interface BuiltRenameTableStatement {
   readonly sql: string;
 }
 export interface BuiltAlterTableDropForeignKeyStatement {
+  readonly sql: string;
+}
+export interface BuiltAlterTableDropColumnStatement {
   readonly sql: string;
 }
 
@@ -163,6 +167,14 @@ export function buildAlterTableDropForeignKeyStatement(input: AlterTableDropFore
   const normalized = normalizeAlterTableDropForeignKeyInput(input);
   return Object.freeze({
     sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} DROP FOREIGN KEY ${escapeIdentifier(normalized.constraint)}`,
+  });
+}
+
+/** Produces the sole canonical one-column DROP COLUMN statement. */
+export function buildAlterTableDropColumnStatement(input: AlterTableDropColumnInput): BuiltAlterTableDropColumnStatement {
+  const normalized = normalizeAlterTableDropColumnInput(input);
+  return Object.freeze({
+    sql: `ALTER TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)} DROP COLUMN ${escapeIdentifier(normalized.column)}`,
   });
 }
 

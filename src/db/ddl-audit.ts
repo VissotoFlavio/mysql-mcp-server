@@ -11,6 +11,11 @@ import {
   type AlterTableAddForeignKeyInput,
 } from '../tools/alter-table-add-foreign-key-input.js';
 import {
+  AlterTableDropColumnInputValidationError,
+  normalizeAlterTableDropColumnInput,
+  type AlterTableDropColumnInput,
+} from '../tools/alter-table-drop-column-input.js';
+import {
   AlterTableDropForeignKeyInputValidationError,
   normalizeAlterTableDropForeignKeyInput,
   type AlterTableDropForeignKeyInput,
@@ -42,6 +47,8 @@ import {
   DropIndexVerificationError,
   RenameTableMetadataError,
   AlterTableDropForeignKeyMetadataError,
+  AlterTableDropColumnMetadataError,
+  AlterTableDropColumnVerificationError,
   CreateViewMetadataError,
   CreateSchemaMetadataError,
   DropViewMetadataError,
@@ -60,6 +67,7 @@ export type DdlAuditOperation =
   | 'drop_index'
   | 'drop_view'
   | 'alter_table_drop_foreign_key'
+  | 'alter_table_drop_column'
   | 'alter_table_add_column'
   | 'alter_table_add_foreign_key'
   | 'alter_table_modify_column'
@@ -141,6 +149,7 @@ type NormalizedRequest = Readonly<{
     | DropIndexInput
     | DropViewInput
     | AlterTableDropForeignKeyInput
+    | AlterTableDropColumnInput
     | AlterTableAddColumnInput
     | AlterTableAddForeignKeyInput
     | AlterTableModifyColumnInput
@@ -238,6 +247,13 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
       return INVALID_REQUEST;
     }
   }
+  if (expectedOperation === 'alter_table_drop_column') {
+    try {
+      return Object.freeze({ operation: 'alter_table_drop_column', input: normalizeAlterTableDropColumnInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
   if (expectedOperation === 'drop_index') {
     try {
       return Object.freeze({ operation: 'drop_index', input: normalizeDropIndexInput(request) });
@@ -289,6 +305,11 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
   }
   try {
     return Object.freeze({ operation: 'alter_table_drop_foreign_key', input: normalizeAlterTableDropForeignKeyInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'alter_table_drop_column', input: normalizeAlterTableDropColumnInput(request) });
   } catch {
     /* try the other supported DDL contract */
   }
@@ -353,25 +374,32 @@ function canonicalRequest(request: NormalizedRequest): object {
               }
             : request.operation === 'alter_table_drop_foreign_key'
               ? { constraint: (input as AlterTableDropForeignKeyInput).constraint }
-              : request.operation === 'alter_table_modify_column'
-                ? {
-                    column: (input as AlterTableModifyColumnInput).column,
-                    definition: (input as AlterTableModifyColumnInput).definition,
-                  }
-                : request.operation === 'drop_index'
-                  ? { index: (input as DropIndexInput).index }
-                  : request.operation === 'create_schema' || request.operation === 'drop_view'
-                    ? {}
-                    : {
-                        columns:
-                          request.operation === 'create_view'
-                            ? (input as CreateViewInput).definition.columns
-                            : inputWithColumns.columns.map((column) =>
-                                typeof column === 'string'
-                                  ? column
-                                  : { name: column.name, type: column.type, nullable: column.nullable, autoIncrement: column.autoIncrement === true },
-                              ),
-                      }),
+              : request.operation === 'alter_table_drop_column'
+                ? { column: (input as AlterTableDropColumnInput).column }
+                : request.operation === 'alter_table_modify_column'
+                  ? {
+                      column: (input as AlterTableModifyColumnInput).column,
+                      definition: (input as AlterTableModifyColumnInput).definition,
+                    }
+                  : request.operation === 'drop_index'
+                    ? { index: (input as DropIndexInput).index }
+                    : request.operation === 'create_schema' || request.operation === 'drop_view'
+                      ? {}
+                      : {
+                          columns:
+                            request.operation === 'create_view'
+                              ? (input as CreateViewInput).definition.columns
+                              : inputWithColumns.columns.map((column) =>
+                                  typeof column === 'string'
+                                    ? column
+                                    : {
+                                        name: column.name,
+                                        type: column.type,
+                                        nullable: column.nullable,
+                                        autoIncrement: column.autoIncrement === true,
+                                      },
+                                ),
+                        }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -397,6 +425,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, AlterTableRenameColumnInputValidationError) ||
       safeInstanceOf(error, RenameTableInputValidationError) ||
       safeInstanceOf(error, AlterTableDropForeignKeyInputValidationError) ||
+      safeInstanceOf(error, AlterTableDropColumnInputValidationError) ||
       safeInstanceOf(error, DdlPolicyError) ||
       safeInstanceOf(error, DdlAuditInputError)
     )
@@ -406,6 +435,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       return (error as CreateSchemaMetadataError).code === 'MYSQL_DDL_SCHEMA_EXISTS' ? OUTCOMES.schemaExists : OUTCOMES.metadata;
     }
     if (safeInstanceOf(error, AlterTableModifyColumnVerificationError)) return OUTCOMES.unknown;
+    if (safeInstanceOf(error, AlterTableDropColumnVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropIndexVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropViewVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropIndexMetadataError)) {
@@ -426,6 +456,14 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     }
     if (safeInstanceOf(error, AlterTableModifyColumnMetadataError)) {
       const code = (error as AlterTableModifyColumnMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : OUTCOMES.structure;
+    }
+    if (safeInstanceOf(error, AlterTableDropColumnMetadataError)) {
+      const code = (error as AlterTableDropColumnMetadataError).code;
       return code === 'MYSQL_DDL_METADATA_INVALID'
         ? OUTCOMES.metadata
         : code === 'MYSQL_DDL_TABLE_INVALID'
@@ -534,9 +572,15 @@ function baseEvent(
                             table: (input as { table: string }).table,
                             constraint: (input as AlterTableDropForeignKeyInput).constraint,
                           }
-                        : normalized.operation === 'alter_table_modify_column'
-                          ? { schema: input.schema, table: (input as { table: string }).table, column: (input as AlterTableModifyColumnInput).column }
-                          : { schema: input.schema, table: (input as { table: string }).table },
+                        : normalized.operation === 'alter_table_drop_column'
+                          ? { schema: input.schema, table: (input as { table: string }).table, column: (input as AlterTableDropColumnInput).column }
+                          : normalized.operation === 'alter_table_modify_column'
+                            ? {
+                                schema: input.schema,
+                                table: (input as { table: string }).table,
+                                column: (input as AlterTableModifyColumnInput).column,
+                              }
+                            : { schema: input.schema, table: (input as { table: string }).table },
           ),
     reason:
       input === null
@@ -555,17 +599,19 @@ function baseEvent(
               ? 1
               : normalized.operation === 'alter_table_modify_column'
                 ? 1
-                : normalized.operation === 'rename_table'
-                  ? null
-                  : normalized.operation === 'drop_index'
+                : normalized.operation === 'alter_table_drop_column'
+                  ? 1
+                  : normalized.operation === 'rename_table'
                     ? null
-                    : normalized.operation === 'create_schema'
+                    : normalized.operation === 'drop_index'
                       ? null
-                      : normalized.operation === 'drop_view'
+                      : normalized.operation === 'create_schema'
                         ? null
-                        : normalized.operation === 'alter_table_drop_foreign_key'
+                        : normalized.operation === 'drop_view'
                           ? null
-                          : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
+                          : normalized.operation === 'alter_table_drop_foreign_key'
+                            ? null
+                            : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };

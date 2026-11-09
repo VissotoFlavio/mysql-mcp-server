@@ -13,6 +13,7 @@ import type { DmlAuditWriter } from './db/dml-audit.js';
 import { createConnectionLayer, type ConnectionLayerBundle, type PoolFactory } from './db/pool.js';
 import { registerAlterTableAddColumnTool } from './tools/alter-table-add-column.js';
 import { registerAlterTableAddForeignKeyTool } from './tools/alter-table-add-foreign-key.js';
+import { registerAlterTableDropColumnTool } from './tools/alter-table-drop-column.js';
 import { registerAlterTableDropForeignKeyTool } from './tools/alter-table-drop-foreign-key.js';
 import { registerAlterTableModifyColumnTool } from './tools/alter-table-modify-column.js';
 import { registerAlterTableRenameColumnTool } from './tools/alter-table-rename-column.js';
@@ -78,6 +79,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerAlterTableAddColumnTool(server, mysql);
     registerAlterTableAddForeignKeyTool(server, mysql);
     registerAlterTableDropForeignKeyTool(server, mysql);
+    if (mysql.dropColumnEnabled && mysql.dropColumnMetadataComplete) registerAlterTableDropColumnTool(server, mysql);
     registerAlterTableModifyColumnTool(server, mysql);
     registerAlterTableRenameColumnTool(server, mysql);
     registerRenameTableTool(server, mysql);

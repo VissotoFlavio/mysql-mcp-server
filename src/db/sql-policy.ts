@@ -445,6 +445,18 @@ export function assertAlterTableDropForeignKeySql(sql: string): void {
   if (index !== sql.length) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical one-column DROP COLUMN grammar. */
+export function assertAlterTableDropColumnSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'ALTER TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, ' DROP COLUMN ');
+  [, index] = readIdentifier(sql, index);
+  if (index !== sql.length) failDdlPolicy();
+}
+
 /** Defense in depth for the canonical one-column nullable ALTER TABLE grammar. */
 export function assertAlterTableAddColumnSql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();

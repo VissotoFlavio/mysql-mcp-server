@@ -4,6 +4,7 @@ import mysql, { type Pool, type PoolOptions, type QueryResult, type QueryValues 
 import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeAlterTableAddForeignKeyInput, type AlterTableAddForeignKeyInput } from '../tools/alter-table-add-foreign-key-input.js';
+import { normalizeAlterTableDropColumnInput, type AlterTableDropColumnInput } from '../tools/alter-table-drop-column-input.js';
 import { normalizeAlterTableDropForeignKeyInput, type AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-foreign-key-input.js';
 import { normalizeAlterTableModifyColumnInput, type AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import { normalizeAlterTableRenameColumnInput, type AlterTableRenameColumnInput } from '../tools/alter-table-rename-column-input.js';
@@ -31,6 +32,7 @@ import {
   buildDropIndexStatement,
   buildDropViewStatement,
   buildAlterTableDropForeignKeyStatement,
+  buildAlterTableDropColumnStatement,
   buildRenameTableStatement,
 } from './ddl-builder.js';
 import { sanitizeDdlDriverCode } from './ddl-error-codes.js';
@@ -56,6 +58,7 @@ import {
   assertDropIndexSql,
   assertDropViewSql,
   assertAlterTableDropForeignKeySql,
+  assertAlterTableDropColumnSql,
   assertCreateTableSql,
   assertCreateViewSql,
   assertRenameTableSql,
@@ -357,6 +360,7 @@ declare const createUniqueIndexStatementBrand: unique symbol;
 declare const dropIndexStatementBrand: unique symbol;
 declare const dropViewStatementBrand: unique symbol;
 declare const alterTableDropForeignKeyStatementBrand: unique symbol;
+declare const alterTableDropColumnStatementBrand: unique symbol;
 declare const alterTableAddColumnStatementBrand: unique symbol;
 declare const alterTableAddForeignKeyStatementBrand: unique symbol;
 declare const alterTableModifyColumnStatementBrand: unique symbol;
@@ -390,6 +394,9 @@ export interface DropViewStatement {
 }
 export interface AlterTableDropForeignKeyStatement {
   readonly [alterTableDropForeignKeyStatementBrand]: true;
+}
+export interface AlterTableDropColumnStatement {
+  readonly [alterTableDropColumnStatementBrand]: true;
 }
 export interface AlterTableAddColumnStatement {
   readonly [alterTableAddColumnStatementBrand]: true;
@@ -434,6 +441,11 @@ export interface DdlConnectionLayer {
   executeAlterTableDropForeignKeyWithOperationId(
     statement: AlterTableDropForeignKeyStatement,
   ): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeAlterTableDropColumn(statement: AlterTableDropColumnStatement): Promise<CreateTableExecutionResult>;
+  executeAlterTableDropColumnWithOperationId(
+    statement: AlterTableDropColumnStatement,
+    verify?: () => Promise<void>,
+  ): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult>;
   executeAlterTableAddColumnWithOperationId(statement: AlterTableAddColumnStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeAlterTableAddForeignKey(statement: AlterTableAddForeignKeyStatement): Promise<CreateTableExecutionResult>;
@@ -465,6 +477,8 @@ export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly ddlEnabled: boolean;
   readonly createSchemaEnabled: boolean;
   readonly dropViewMetadataComplete: boolean;
+  readonly dropColumnEnabled: boolean;
+  readonly dropColumnMetadataComplete: boolean;
   readonly dml: DmlConnectionLayer;
   readonly ddl: DdlConnectionLayer;
 }
@@ -485,6 +499,7 @@ type DdlStatement =
   | DropIndexStatement
   | DropViewStatement
   | AlterTableDropForeignKeyStatement
+  | AlterTableDropColumnStatement
   | AlterTableAddColumnStatement
   | AlterTableAddForeignKeyStatement
   | AlterTableModifyColumnStatement
@@ -499,6 +514,7 @@ type DdlStatementData =
   | Readonly<{ operation: 'drop_index'; sql: string; input: DropIndexInput }>
   | Readonly<{ operation: 'drop_view'; sql: string; input: DropViewInput }>
   | Readonly<{ operation: 'alter_table_drop_foreign_key'; sql: string; input: AlterTableDropForeignKeyInput }>
+  | Readonly<{ operation: 'alter_table_drop_column'; sql: string; input: AlterTableDropColumnInput }>
   | Readonly<{ operation: 'alter_table_add_column'; sql: string; input: AlterTableAddColumnInput }>
   | Readonly<{ operation: 'alter_table_add_foreign_key'; sql: string; input: AlterTableAddForeignKeyInput }>
   | Readonly<{ operation: 'alter_table_modify_column'; sql: string; input: AlterTableModifyColumnInput }>
@@ -623,6 +639,21 @@ export function createAlterTableDropForeignKeyStatement(input: AlterTableDropFor
   }
   const statement = Object.freeze({}) as AlterTableDropForeignKeyStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'alter_table_drop_foreign_key', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported one-column DROP COLUMN statement. */
+export function createAlterTableDropColumnStatement(input: AlterTableDropColumnInput): AlterTableDropColumnStatement {
+  let sql: string;
+  let normalized: AlterTableDropColumnInput;
+  try {
+    normalized = normalizeAlterTableDropColumnInput(input);
+    sql = buildAlterTableDropColumnStatement(normalized).sql;
+  } catch {
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as AlterTableDropColumnStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'alter_table_drop_column', sql, input: normalized }));
   return statement;
 }
 
@@ -992,6 +1023,8 @@ export function createConnectionLayer({
     try {
       if (!config.ddlEnabled) throw new DdlDisabledError();
       if (expected === 'create_schema' && !config.createSchemaEnabled) throw new DdlDisabledError();
+      if (expected === 'alter_table_drop_column' && !config.dropColumnEnabled) throw new DdlDisabledError();
+      if (expected === 'alter_table_drop_column' && !config.dropColumnMetadataComplete) throw new DdlDisabledError();
       if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
       if (statementData.operation === 'create_schema') assertCreateSchemaSql(statementData.sql);
       else if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
@@ -1001,6 +1034,7 @@ export function createConnectionLayer({
       else if (statementData.operation === 'drop_index') assertDropIndexSql(statementData.sql);
       else if (statementData.operation === 'drop_view') assertDropViewSql(statementData.sql);
       else if (statementData.operation === 'alter_table_drop_foreign_key') assertAlterTableDropForeignKeySql(statementData.sql);
+      else if (statementData.operation === 'alter_table_drop_column') assertAlterTableDropColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_column') assertAlterTableAddColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_add_foreign_key') assertAlterTableAddForeignKeySql(statementData.sql);
       else if (statementData.operation === 'alter_table_modify_column') assertAlterTableModifyColumnSql(statementData.sql);
@@ -1069,6 +1103,12 @@ export function createConnectionLayer({
     },
     executeAlterTableDropForeignKeyWithOperationId: (statement: AlterTableDropForeignKeyStatement) =>
       executeDdlWithOperationId(statement, 'alter_table_drop_foreign_key'),
+    async executeAlterTableDropColumn(statement: AlterTableDropColumnStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'alter_table_drop_column');
+      return result;
+    },
+    executeAlterTableDropColumnWithOperationId: (statement: AlterTableDropColumnStatement, verify?: () => Promise<void>) =>
+      executeDdlWithOperationId(statement, 'alter_table_drop_column', verify),
     async executeAlterTableAddColumn(statement: AlterTableAddColumnStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'alter_table_add_column');
       return result;
@@ -1105,6 +1145,8 @@ export function createConnectionLayer({
     ddlEnabled: config.ddlEnabled,
     createSchemaEnabled: config.createSchemaEnabled,
     dropViewMetadataComplete: config.dropViewMetadataComplete,
+    dropColumnEnabled: config.dropColumnEnabled,
+    dropColumnMetadataComplete: config.dropColumnMetadataComplete,
     queryTimeoutMs: config.queryTimeoutMs,
     queryOptions: () => queryOptions,
     async query<T extends QueryResult>(

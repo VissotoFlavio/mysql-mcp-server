@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [#78 — feat: add controlled `alter_table_drop_column`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/78): separate strict opt-in and metadata-visibility attestation, exact `DROP_COLUMN` confirmation, fail-closed dependency preflight, sanitized audit/outcomes, post-execution verification, and no automatic retry guidance.
+
 ## 0.15.0 - 2026-11-08
 
 - [#81 — feat: add controlled `create_schema`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/81)
