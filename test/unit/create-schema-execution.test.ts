@@ -26,7 +26,7 @@ async function connectedApplication(environment: Record<string, string>) {
           async execute(options: unknown) {
             executeCalls += 1;
             executeOptions = options;
-            return [{ affectedRows: 0, warningStatus: 0, secret: 'driver-secret' }, []];
+            return [{ affectedRows: 1, warningStatus: 0, secret: 'driver-secret' }, []];
           },
           async end() {},
         }) as never,

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   ConnectionError,
   createConnectionLayer,
+  createCreateSchemaStatement,
   createCreateIndexStatement,
   createCreateTableStatement,
   createCreateUniqueIndexStatement,
@@ -153,6 +154,30 @@ test('executes only a capability-minted canonical CREATE TABLE and returns narro
     sql: 'CREATE TABLE `app`.`accounts` (`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, `name` VARCHAR(255) NOT NULL, PRIMARY KEY (`id`))',
     timeout: 30_000,
   });
+  await layer.close();
+});
+
+test('accepts MySQL CREATE SCHEMA affected-row metadata without relaxing other DDL results', async () => {
+  const layer = createConnectionLayer({
+    environment: validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'true' }),
+    driver: {
+      createPool() {
+        return {
+          async query() {
+            return [[]];
+          },
+          async execute(options: { sql: string }) {
+            assert.equal(options.sql, 'CREATE SCHEMA `mcp_ddl_test_catalog`');
+            return [{ affectedRows: 1, warningStatus: 0 }, []];
+          },
+          async end() {},
+        } as never;
+      },
+    },
+  });
+
+  const statement = createCreateSchemaStatement({ schema: 'mcp_ddl_test_catalog', reason: 'Create an isolated test schema.' });
+  assert.deepEqual(await layer.ddl.executeCreateSchema(statement), { warningStatus: 0 });
   await layer.close();
 });
 

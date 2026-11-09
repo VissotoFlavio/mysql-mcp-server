@@ -327,14 +327,14 @@ export type CreateTableExecutionResult = Readonly<{
   warningStatus: number;
 }>;
 
-function normalizeCreateTableResult(result: unknown): CreateTableExecutionResult {
+function normalizeCreateTableResult(result: unknown, expectedAffectedRows = 0): CreateTableExecutionResult {
   try {
     if (typeof result !== 'object' || result === null || !Object.hasOwn(result, 'affectedRows') || !Object.hasOwn(result, 'warningStatus')) {
       throw new DdlResultError();
     }
     const record = result as Record<string, unknown>;
     if (
-      record.affectedRows !== 0 ||
+      record.affectedRows !== expectedAffectedRows ||
       typeof record.warningStatus !== 'number' ||
       !Number.isSafeInteger(record.warningStatus) ||
       record.warningStatus < 0
@@ -1009,7 +1009,7 @@ export function createConnectionLayer({
       audit.markSubmitted();
       submitted = true;
       const [result] = await pool.execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
-      const normalizedResult = normalizeCreateTableResult(result);
+      const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' ? 1 : 0);
       if (verify !== undefined) await verify();
       audit.emit();
       return [normalizedResult, audit.operationId];
