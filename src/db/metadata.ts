@@ -8,6 +8,7 @@ import type { AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-fo
 import type { AlterTableModifyColumnDefinition, AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import type { CreateTableColumnType } from '../tools/create-table-input.js';
 import { dropTableMetadataRevision, type DropTableInput } from '../tools/drop-table-input.js';
+import { truncateTableMetadataRevision, type TruncateTableInput } from '../tools/truncate-table-input.js';
 
 import type { ConnectionLayer } from './pool.js';
 
@@ -17,7 +18,9 @@ const TABLE_METADATA_ATTESTATION_TTL_MS = 5 * 60 * 1000;
 const MAX_TABLE_METADATA_ATTESTATIONS = 2048;
 const tableMetadataAttestations = new Map<string, Readonly<{ schema: string; table: string; fingerprint: string; expiresAt: number }>>();
 const tableMetadataFingerprints = new WeakMap<object, string>();
+const tableMetadataShapeFingerprints = new WeakMap<object, string>();
 const tableMetadataIdentities = new WeakMap<object, string>();
+const tableMetadataCompleteness = new WeakMap<object, boolean>();
 
 const LIST_SCHEMAS_SQL = `
   SELECT SCHEMA_NAME AS schemaName
@@ -788,6 +791,23 @@ export class DropTableVerificationError extends Error {
   }
 }
 
+export type TruncateTableMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
+export class TruncateTableMetadataError extends Error {
+  constructor(
+    readonly code: TruncateTableMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'TruncateTableMetadataError';
+  }
+}
+export class TruncateTableVerificationError extends Error {
+  constructor() {
+    super('The truncated table could not be verified.');
+    this.name = 'TruncateTableVerificationError';
+  }
+}
+
 export type AlterTableAddColumnMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_COLUMN_EXISTS';
 
 export class AlterTableAddColumnMetadataError extends Error {
@@ -900,6 +920,8 @@ const DROP_VIEW_METADATA_VIEW_ONLY = 'DROP VIEW is supported for existing views 
 const DROP_VIEW_METADATA_DEPENDENCIES = 'The requested view has known dependent views.';
 const DROP_TABLE_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const DROP_TABLE_METADATA_DEPENDENCIES = 'The requested table has known dependencies.';
+const TRUNCATE_TABLE_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
+const TRUNCATE_TABLE_METADATA_FOREIGN_KEYS = 'The requested table has foreign-key relationships.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
@@ -970,6 +992,23 @@ function createTableMetadataFingerprint(
     .digest('hex');
 }
 
+function validTableCreateTime(value: unknown): value is string | Date {
+  if (value instanceof Date) return !Number.isNaN(value.getTime());
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$/u.exec(value);
+  if (match === null) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (year < 1 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function issueTableMetadataAttestation(schema: string, table: string, fingerprint: string): string {
   const now = Date.now();
   for (const [revision, attestation] of tableMetadataAttestations) {
@@ -999,7 +1038,7 @@ export async function describeAccessibleTable(
   table: string,
   issueAttestation = false,
 ): Promise<TableDescription | undefined> {
-  const [rows] = await mysql.query<TableDescriptionRow[]>(queryOptions(mysql, DESCRIBE_TABLE_SQL), [schema, table, MAX_METADATA_RESULTS]);
+  const [rows] = await mysql.query<TableDescriptionRow[]>(queryOptions(mysql, DESCRIBE_TABLE_SQL), [schema, table, MAX_METADATA_RESULTS + 1]);
   const boundedRows = rows.slice(0, MAX_METADATA_RESULTS);
   const firstRow = boundedRows[0];
 
@@ -1020,14 +1059,28 @@ export async function describeAccessibleTable(
       columnKey,
     })),
   };
-  const fingerprint = createTableMetadataFingerprint(description, firstRow.createTime);
+  const hasValidIdentity = validTableCreateTime(firstRow.createTime);
+  const hasValidColumnMetadata = boundedRows.every(
+    (row) =>
+      typeof row.columnName === 'string' &&
+      row.columnName.length > 0 &&
+      typeof row.dataType === 'string' &&
+      row.dataType.length > 0 &&
+      (row.isNullable === 'YES' || row.isNullable === 'NO') &&
+      typeof row.columnKey === 'string',
+  );
+  const fingerprint = hasValidIdentity ? createTableMetadataFingerprint(description, firstRow.createTime) : '';
   const result = Object.freeze({
     ...description,
-    metadataRevision: issueAttestation ? issueTableMetadataAttestation(schema, table, fingerprint) : createTableMetadataRevision(description),
+    metadataRevision:
+      issueAttestation && rows.length <= MAX_METADATA_RESULTS && hasValidIdentity && hasValidColumnMetadata
+        ? issueTableMetadataAttestation(schema, table, fingerprint)
+        : createTableMetadataRevision(description),
   });
   tableMetadataFingerprints.set(result, fingerprint);
-  if (firstRow.createTime !== null && firstRow.createTime !== undefined && String(firstRow.createTime).length > 0)
-    tableMetadataIdentities.set(result, String(firstRow.createTime));
+  tableMetadataShapeFingerprints.set(result, createTableMetadataRevision(description));
+  tableMetadataCompleteness.set(result, rows.length <= MAX_METADATA_RESULTS && hasValidIdentity && hasValidColumnMetadata);
+  if (hasValidIdentity) tableMetadataIdentities.set(result, String(firstRow.createTime));
   return result;
 }
 
@@ -1757,6 +1810,7 @@ function validDropTableDescription(description: TableDescription, schema: string
     (requireAttestation &&
       (attestation === undefined || attestation.schema !== schema || attestation.table !== table || attestation.fingerprint !== fingerprint)) ||
     fingerprint === undefined ||
+    tableMetadataCompleteness.get(description) !== true ||
     identity === undefined
   )
     return false;
@@ -1880,6 +1934,147 @@ export async function validateDropTableMetadata(mysql: ConnectionLayer, input: D
   )
     throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
   return Object.freeze({ metadataRevision: requestedRevision });
+}
+
+function truncateTableMetadataError(code: TruncateTableMetadataCode): TruncateTableMetadataError {
+  return new TruncateTableMetadataError(
+    code,
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? 'TRUNCATE TABLE is supported for existing base tables only.'
+      : code === 'MYSQL_DDL_STRUCTURE_INVALID'
+        ? TRUNCATE_TABLE_METADATA_FOREIGN_KEYS
+        : TRUNCATE_TABLE_METADATA_UNAVAILABLE,
+  );
+}
+
+function validTruncateTableDescription(description: TableDescription, schema: string, table: string, requireAttestation = true): boolean {
+  if (!description || typeof description !== 'object') return false;
+  const attestation = requireAttestation ? getTableMetadataAttestation(description.metadataRevision) : undefined;
+  const fingerprint = tableMetadataFingerprints.get(description);
+  const identity = tableMetadataIdentities.get(description);
+  if (
+    !description.table ||
+    description.table.schemaName !== schema ||
+    description.table.tableName !== table ||
+    description.table.tableType !== 'BASE TABLE' ||
+    !Array.isArray(description.columns) ||
+    description.columns.length === 0 ||
+    description.columns.length > MAX_METADATA_RESULTS ||
+    !/^[0-9a-f]{64}$/u.test(description.metadataRevision) ||
+    (requireAttestation &&
+      (attestation === undefined || attestation.schema !== schema || attestation.table !== table || attestation.fingerprint !== fingerprint)) ||
+    fingerprint === undefined ||
+    tableMetadataCompleteness.get(description) !== true ||
+    identity === undefined
+  )
+    return false;
+  const names = new Set<string>();
+  for (const column of description.columns) {
+    if (
+      typeof column !== 'object' ||
+      column === null ||
+      !isNonEmptyString(column.columnName) ||
+      !isNonEmptyString(column.dataType) ||
+      typeof column.isNullable !== 'boolean' ||
+      typeof column.columnKey !== 'string' ||
+      names.has(normalizedIdentifierName(column.columnName))
+    )
+      return false;
+    names.add(normalizedIdentifierName(column.columnName));
+  }
+  return true;
+}
+
+/** @internal Validates one base table and rejects every known foreign-key relationship before TRUNCATE TABLE. */
+export async function validateTruncateTableMetadata(
+  mysql: ConnectionLayer,
+  input: TruncateTableInput,
+): Promise<Readonly<{ metadataRevision: string; shapeFingerprint: string }>> {
+  let foreignKeys: DropTableForeignKeyRow[];
+  let description: TableDescription | undefined;
+  const requestedRevision = truncateTableMetadataRevision(input.confirmation);
+  const requestedAttestation = getTableMetadataAttestation(requestedRevision);
+  if (requestedAttestation === undefined || requestedAttestation.schema !== input.schema || requestedAttestation.table !== input.table)
+    throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  try {
+    description = await describeAccessibleTable(mysql, input.schema, input.table);
+    [foreignKeys] = await mysql.query<DropTableForeignKeyRow[]>(queryOptions(mysql, VALIDATE_DROP_TABLE_FOREIGN_KEYS_SQL), [
+      input.schema,
+      input.table,
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+
+  if (description === undefined) throw truncateTableMetadataError('MYSQL_DDL_TABLE_INVALID');
+  if (!description.table || description.table.tableType !== 'BASE TABLE') throw truncateTableMetadataError('MYSQL_DDL_TABLE_INVALID');
+  if (!validTruncateTableDescription(description, input.schema, input.table, false)) throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const currentFingerprint = tableMetadataFingerprints.get(description);
+  if (currentFingerprint === undefined || currentFingerprint !== requestedAttestation.fingerprint)
+    throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  if (!Array.isArray(foreignKeys) || foreignKeys.length > MAX_METADATA_RESULTS) throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+
+  for (const row of foreignKeys) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.constraintSchemaName) ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.constraintName) ||
+      !isNonEmptyString(row.referencedSchemaName) ||
+      !isNonEmptyString(row.referencedTableName) ||
+      !(
+        (row.schemaName === input.schema && row.tableName === input.table) ||
+        (row.referencedSchemaName === input.schema && row.referencedTableName === input.table)
+      )
+    )
+      throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (foreignKeys.length > 0) throw truncateTableMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+
+  const latestDescription = await describeAccessibleTable(mysql, input.schema, input.table).catch(() => undefined);
+  if (
+    latestDescription === undefined ||
+    !validTruncateTableDescription(latestDescription, input.schema, input.table, false) ||
+    tableMetadataFingerprints.get(latestDescription) !== requestedAttestation.fingerprint
+  )
+    throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const shapeFingerprint = tableMetadataShapeFingerprints.get(description);
+  if (shapeFingerprint === undefined) throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  return Object.freeze({ metadataRevision: requestedRevision, shapeFingerprint });
+}
+
+/** Consumes one recent target-bound confirmation before submitting TRUNCATE TABLE. */
+export function consumeTruncateTableMetadataAttestation(schema: string, table: string, metadataRevision: string): void {
+  const attestation = getTableMetadataAttestation(metadataRevision);
+  if (attestation === undefined || attestation.schema !== schema || attestation.table !== table)
+    throw truncateTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  tableMetadataAttestations.delete(metadataRevision);
+}
+
+/** @internal Confirms that the target table still exists as a base table after TRUNCATE TABLE. */
+export async function verifyTruncateTableMetadata(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+  expectedShapeFingerprint: string,
+): Promise<void> {
+  try {
+    const description = await describeAccessibleTable(mysql, schema, table);
+    if (
+      description === undefined ||
+      !validTruncateTableDescription(description, schema, table, false) ||
+      tableMetadataShapeFingerprints.get(description) !== expectedShapeFingerprint
+    )
+      throw new TruncateTableVerificationError();
+  } catch (error) {
+    if (error instanceof TruncateTableVerificationError) throw error;
+    throw new TruncateTableVerificationError();
+  }
 }
 
 /** Consumes one recent target-bound confirmation before submitting destructive DDL. */

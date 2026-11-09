@@ -279,7 +279,7 @@ test('describes a visible table with parameterized bounded column metadata', asy
     assert.match((queryOptions as { sql: string }).sql, /AND tables\.TABLE_NAME = \?/);
     assert.match((queryOptions as { sql: string }).sql, /ORDER BY columns\.ORDINAL_POSITION ASC/);
     assert.equal((queryOptions as { timeout: number }).timeout, 30_000);
-    assert.deepEqual(values, ['app', 'accounts', 100]);
+    assert.deepEqual(values, ['app', 'accounts', 101]);
   } finally {
     await client.close();
   }
@@ -344,7 +344,7 @@ test('binds quoted-compatible MySQL identifiers without altering their values', 
       arguments: { schema: 'sales-2026', table: 'ações 2024' },
     });
     assert.equal(response.result?.isError, undefined);
-    assert.deepEqual(values, ['sales-2026', 'ações 2024', 100]);
+    assert.deepEqual(values, ['sales-2026', 'ações 2024', 101]);
   } finally {
     await client.close();
   }

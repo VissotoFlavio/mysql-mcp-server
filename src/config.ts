@@ -33,6 +33,8 @@ export interface ConnectionConfig {
   readonly dropColumnMetadataComplete: boolean;
   readonly dropTableEnabled: boolean;
   readonly dropTableMetadataComplete: boolean;
+  readonly truncateTableEnabled: boolean;
+  readonly truncateTableMetadataComplete: boolean;
   readonly poolLimit: number;
   readonly queueLimit: number;
   readonly connectTimeoutMs: number;
@@ -216,6 +218,8 @@ export function loadConnectionConfig(
   const dropColumnMetadataComplete = strictBooleanValue(environment, 'MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE', false);
   const dropTableOptIn = strictBooleanValue(environment, 'MYSQL_DDL_DROP_TABLE_ENABLED', false);
   const dropTableMetadataComplete = strictBooleanValue(environment, 'MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE', false);
+  const truncateTableOptIn = strictBooleanValue(environment, 'MYSQL_DDL_TRUNCATE_TABLE_ENABLED', false);
+  const truncateTableMetadataComplete = strictBooleanValue(environment, 'MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE', false);
 
   return Object.freeze({
     host: validateHost(requiredValue(environment, 'MYSQL_HOST')),
@@ -231,6 +235,8 @@ export function loadConnectionConfig(
     dropColumnMetadataComplete: ddlEnabled && dropColumnOptIn && dropColumnMetadataComplete,
     dropTableEnabled: ddlEnabled && dropTableOptIn,
     dropTableMetadataComplete: ddlEnabled && dropTableOptIn && dropTableMetadataComplete,
+    truncateTableEnabled: ddlEnabled && truncateTableOptIn,
+    truncateTableMetadataComplete: ddlEnabled && truncateTableOptIn && truncateTableMetadataComplete,
     poolLimit: integerValue(environment, 'MYSQL_POOL_LIMIT', DEFAULTS.poolLimit, { min: 1, max: 2 }),
     queueLimit: integerValue(environment, 'MYSQL_QUEUE_LIMIT', DEFAULTS.queueLimit, { min: 1, max: 100 }),
     connectTimeoutMs: integerValue(environment, 'MYSQL_CONNECT_TIMEOUT_MS', DEFAULTS.connectTimeoutMs, { min: 100, max: 60_000 }),

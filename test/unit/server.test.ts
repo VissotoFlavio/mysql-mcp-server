@@ -114,3 +114,29 @@ test('advertises DROP TABLE only when both destructive capability flags are enab
     await application.close();
   }
 });
+
+test('advertises TRUNCATE TABLE only when both destructive capability flags are enabled', async () => {
+  for (const [override, expected] of [
+    [{ MYSQL_DDL_ENABLED: 'true' }, false],
+    [{ MYSQL_DDL_ENABLED: 'false', MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'true', MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE: 'true' }, false],
+    [{ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'true' }, false],
+    [{ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'true', MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE: 'true' }, true],
+  ] as const) {
+    const application = createMcpApplication({
+      environment: validEnvironment(override),
+      driver: {
+        createPool: () =>
+          ({
+            async query() {
+              return [[]];
+            },
+            async end() {},
+          }) as never,
+      },
+    });
+    const transport = new StdioServerTransport(new PassThrough(), new PassThrough());
+    await application.server.connect(transport);
+    assert.equal(application.mysql.truncateTableEnabled && application.mysql.truncateTableMetadataComplete, expected);
+    await application.close();
+  }
+});
