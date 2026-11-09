@@ -54,6 +54,8 @@ export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverC
   1356: 'structure',
   ER_ROW_IS_REFERENCED_2: 'structure',
   1451: 'structure',
+  ER_TRUNCATE_ILLEGAL_FK: 'structure',
+  1701: 'structure',
   ER_NO_REFERENCED_ROW_2: 'structure',
   1452: 'structure',
   ER_FK_CANNOT_OPEN_PARENT: 'structure',

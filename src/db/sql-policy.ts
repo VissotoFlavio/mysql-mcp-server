@@ -433,6 +433,16 @@ export function assertDropTableSql(sql: string): void {
   if (index !== sql.length) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical named TRUNCATE TABLE grammar. */
+export function assertTruncateTableSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'TRUNCATE TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  if (index !== sql.length) failDdlPolicy();
+}
+
 /** Defense in depth for the canonical named DROP VIEW grammar. */
 export function assertDropViewSql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.0 - 2026-11-09
+
+- [#80 — ddl: expose controlled `truncate_table` MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/80): separate destructive opt-in, target-bound metadata confirmation, foreign-key fail-closed preflight, sanitized audit/outcomes, stable TRUNCATE effects, and no automatic retry.
+
 ## 0.17.0 - 2026-11-09
 
 - [#79 — feat: add controlled `drop_table`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/79): separate destructive opt-in, target-bound metadata revision confirmation, fail-closed dependency preflight, sanitized audit/outcomes, post-execution verification, and no automatic retry.

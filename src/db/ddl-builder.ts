@@ -13,6 +13,7 @@ import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-inde
 import { normalizeDropTableInput, type DropTableInput } from '../tools/drop-table-input.js';
 import { normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
+import { normalizeTruncateTableInput, type TruncateTableInput } from '../tools/truncate-table-input.js';
 
 export interface BuiltCreateTableStatement {
   readonly sql: string;
@@ -33,6 +34,9 @@ export interface BuiltDropIndexStatement {
   readonly sql: string;
 }
 export interface BuiltDropTableStatement {
+  readonly sql: string;
+}
+export interface BuiltTruncateTableStatement {
   readonly sql: string;
 }
 export interface BuiltDropViewStatement {
@@ -162,6 +166,12 @@ export function buildDropIndexStatement(input: DropIndexInput): BuiltDropIndexSt
 export function buildDropTableStatement(input: DropTableInput): BuiltDropTableStatement {
   const normalized = normalizeDropTableInput(input);
   return Object.freeze({ sql: `DROP TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)}` });
+}
+
+/** Produces the sole canonical SQL representation for one explicitly confirmed table truncation. */
+export function buildTruncateTableStatement(input: TruncateTableInput): BuiltTruncateTableStatement {
+  const normalized = normalizeTruncateTableInput(input);
+  return Object.freeze({ sql: `TRUNCATE TABLE ${escapeIdentifier(normalized.schema)}.${escapeIdentifier(normalized.table)}` });
 }
 
 /** Produces the sole canonical SQL representation for the supported DROP VIEW input. */
