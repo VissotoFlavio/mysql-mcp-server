@@ -423,6 +423,16 @@ export function assertDropIndexSql(sql: string): void {
   if (index !== sql.length) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical named DROP TABLE grammar. */
+export function assertDropTableSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'DROP TABLE ');
+  [, index] = readIdentifier(sql, index);
+  index = readExpected(sql, index, '.');
+  [, index] = readIdentifier(sql, index);
+  if (index !== sql.length) failDdlPolicy();
+}
+
 /** Defense in depth for the canonical named DROP VIEW grammar. */
 export function assertDropViewSql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();

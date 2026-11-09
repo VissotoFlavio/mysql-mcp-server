@@ -36,6 +36,7 @@ import { CreateTableInputValidationError, normalizeCreateTableInput, type Create
 import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '../tools/create-unique-index-input.js';
 import { CreateViewInputValidationError, normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { DropIndexInputValidationError, normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
+import { DropTableInputValidationError, dropTableMetadataRevision, normalizeDropTableInput, type DropTableInput } from '../tools/drop-table-input.js';
 import { DropViewInputValidationError, normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { RenameTableInputValidationError, normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
 
@@ -53,6 +54,8 @@ import {
   CreateSchemaMetadataError,
   DropViewMetadataError,
   DropViewVerificationError,
+  DropTableMetadataError,
+  DropTableVerificationError,
 } from './metadata.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
@@ -65,6 +68,7 @@ export type DdlAuditOperation =
   | 'create_index'
   | 'create_unique_index'
   | 'drop_index'
+  | 'drop_table'
   | 'drop_view'
   | 'alter_table_drop_foreign_key'
   | 'alter_table_drop_column'
@@ -147,6 +151,7 @@ type NormalizedRequest = Readonly<{
     | CreateIndexInput
     | CreateUniqueIndexInput
     | DropIndexInput
+    | DropTableInput
     | DropViewInput
     | AlterTableDropForeignKeyInput
     | AlterTableDropColumnInput
@@ -185,6 +190,7 @@ const OUTCOMES = {
   lockTimeout: { result: 'failed', code: 'MYSQL_DDL_LOCK_TIMEOUT', message: 'The DDL operation exceeded its lock wait.' },
   deadlock: { result: 'failed', code: 'MYSQL_DDL_DEADLOCK', message: 'The DDL operation encountered a deadlock.' },
   structure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'MySQL rejected the table structure.' },
+  tableStructure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'The target table has known dependencies.' },
   viewStructure: { result: 'failed', code: 'MYSQL_DDL_STRUCTURE_INVALID', message: 'The target view has known dependent views.' },
 } as const satisfies Record<string, SafeDdlOutcome>;
 
@@ -267,6 +273,18 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
     } catch {
       return INVALID_REQUEST;
     }
+  }
+  if (expectedOperation === 'drop_table') {
+    try {
+      return Object.freeze({ operation: 'drop_table', input: normalizeDropTableInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
+  try {
+    return Object.freeze({ operation: 'drop_table', input: normalizeDropTableInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
   }
   try {
     return Object.freeze({ operation: 'create_schema', input: normalizeCreateSchemaInput(request) });
@@ -355,7 +373,9 @@ function canonicalRequest(request: NormalizedRequest): object {
             }
           : request.operation === 'drop_view'
             ? { schema: input.schema, view: (input as DropViewInput).view }
-            : { schema: input.schema, table: (input as { table: string }).table },
+            : request.operation === 'drop_table'
+              ? { schema: input.schema, table: (input as DropTableInput).table }
+              : { schema: input.schema, table: (input as { table: string }).table },
     reason: input.reason,
     ...(request.operation === 'alter_table_add_column'
       ? { column: (input as AlterTableAddColumnInput).column }
@@ -385,21 +405,23 @@ function canonicalRequest(request: NormalizedRequest): object {
                     ? { index: (input as DropIndexInput).index }
                     : request.operation === 'create_schema' || request.operation === 'drop_view'
                       ? {}
-                      : {
-                          columns:
-                            request.operation === 'create_view'
-                              ? (input as CreateViewInput).definition.columns
-                              : inputWithColumns.columns.map((column) =>
-                                  typeof column === 'string'
-                                    ? column
-                                    : {
-                                        name: column.name,
-                                        type: column.type,
-                                        nullable: column.nullable,
-                                        autoIncrement: column.autoIncrement === true,
-                                      },
-                                ),
-                        }),
+                      : request.operation === 'drop_table'
+                        ? { metadataRevision: dropTableMetadataRevision((input as DropTableInput).confirmation) }
+                        : {
+                            columns:
+                              request.operation === 'create_view'
+                                ? (input as CreateViewInput).definition.columns
+                                : inputWithColumns.columns.map((column) =>
+                                    typeof column === 'string'
+                                      ? column
+                                      : {
+                                          name: column.name,
+                                          type: column.type,
+                                          nullable: column.nullable,
+                                          autoIncrement: column.autoIncrement === true,
+                                        },
+                                  ),
+                          }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -418,6 +440,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, CreateViewInputValidationError) ||
       safeInstanceOf(error, CreateIndexInputValidationError) ||
       safeInstanceOf(error, DropIndexInputValidationError) ||
+      safeInstanceOf(error, DropTableInputValidationError) ||
       safeInstanceOf(error, DropViewInputValidationError) ||
       safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
       safeInstanceOf(error, AlterTableAddForeignKeyInputValidationError) ||
@@ -438,6 +461,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     if (safeInstanceOf(error, AlterTableDropColumnVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropIndexVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropViewVerificationError)) return OUTCOMES.unknown;
+    if (safeInstanceOf(error, DropTableVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropIndexMetadataError)) {
       const code = (error as DropIndexMetadataError).code;
       return code === 'MYSQL_DDL_METADATA_INVALID'
@@ -453,6 +477,14 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
         : code === 'MYSQL_DDL_TABLE_INVALID'
           ? OUTCOMES.viewInvalid
           : OUTCOMES.viewStructure;
+    }
+    if (safeInstanceOf(error, DropTableMetadataError)) {
+      const code = (error as DropTableMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : OUTCOMES.tableStructure;
     }
     if (safeInstanceOf(error, AlterTableModifyColumnMetadataError)) {
       const code = (error as AlterTableModifyColumnMetadataError).code;
@@ -585,7 +617,7 @@ function baseEvent(
     reason:
       input === null
         ? '[invalid]'
-        : normalized.operation === 'create_schema'
+        : normalized.operation === 'create_schema' || normalized.operation === 'drop_table'
           ? createHash('sha256').update(input.reason, 'utf8').digest('hex')
           : input.reason,
     columnCount:
@@ -609,9 +641,11 @@ function baseEvent(
                         ? null
                         : normalized.operation === 'drop_view'
                           ? null
-                          : normalized.operation === 'alter_table_drop_foreign_key'
+                          : normalized.operation === 'drop_table'
                             ? null
-                            : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
+                            : normalized.operation === 'alter_table_drop_foreign_key'
+                              ? null
+                              : (input as CreateTableInput | CreateIndexInput | CreateUniqueIndexInput | AlterTableAddForeignKeyInput).columns.length,
     primaryKeyColumnCount: input !== null && normalized.operation === 'create_table' ? (input as CreateTableInput).primaryKey.length : null,
     requestHash,
   };

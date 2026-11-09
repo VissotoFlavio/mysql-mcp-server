@@ -112,7 +112,8 @@ test('returns only mocked accessible schema metadata in deterministic bounded qu
 
   try {
     const response = await client.request('tools/call', { name: 'list_accessible_schemas', arguments: {} });
-    assert.deepEqual(JSON.parse(toolText(response)), {
+    const described = JSON.parse(toolText(response)) as Record<string, unknown>;
+    assert.deepEqual(described, {
       metadata: [{ schemaName: 'app' }, { schemaName: 'reporting' }],
     });
     assert.match((queryOptions as { sql: string }).sql, /ORDER BY SCHEMA_NAME ASC/);
@@ -159,7 +160,8 @@ test('filters accessible tables by schema with parameterized and bounded metadat
       name: 'list_accessible_tables',
       arguments: { schema: 'app' },
     });
-    assert.deepEqual(JSON.parse(toolText(response)), {
+    const described = JSON.parse(toolText(response)) as Record<string, unknown>;
+    assert.deepEqual(described, {
       metadata: [
         { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE' },
         { schemaName: 'app', tableName: 'events', tableType: 'BASE TABLE' },
@@ -261,13 +263,16 @@ test('describes a visible table with parameterized bounded column metadata', asy
       name: 'describe_table',
       arguments: { schema: 'app', table: 'accounts' },
     });
-    assert.deepEqual(JSON.parse(toolText(response)), {
+    const described = JSON.parse(toolText(response)) as Record<string, unknown>;
+    assert.deepEqual(described, {
       table: { schemaName: 'app', tableName: 'accounts', tableType: 'BASE TABLE' },
       columns: [
         { columnName: 'id', dataType: 'bigint', isNullable: false, columnKey: 'PRI' },
         { columnName: 'status', dataType: 'varchar', isNullable: true, columnKey: '' },
       ],
+      metadataRevision: described.metadataRevision,
     });
+    assert.match(described.metadataRevision as string, /^[0-9a-f]{64}$/u);
     assert.match((queryOptions as { sql: string }).sql, /FROM information_schema\.TABLES AS tables/);
     assert.match((queryOptions as { sql: string }).sql, /INNER JOIN information_schema\.COLUMNS AS columns/);
     assert.match((queryOptions as { sql: string }).sql, /WHERE tables\.TABLE_SCHEMA = \?/);
@@ -488,8 +493,9 @@ test('advertises discovery tools as read-only with output schemas', async () => 
           outputSchema: {
             type: 'object',
             additionalProperties: false,
-            required: ['table', 'columns'],
+            required: ['table', 'columns', 'metadataRevision'],
             properties: {
+              metadataRevision: { type: 'string', pattern: '^[0-9a-f]{64}$' },
               table: {
                 type: 'object',
                 additionalProperties: false,

@@ -14,6 +14,8 @@ const enabled =
   process.env.MYSQL_DDL_ENABLED === 'true' &&
   process.env.MYSQL_DDL_DROP_COLUMN_ENABLED === 'true' &&
   process.env.MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE === 'true' &&
+  process.env.MYSQL_DDL_DROP_TABLE_ENABLED === 'true' &&
+  process.env.MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE === 'true' &&
   process.env.MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE === 'true' &&
   process.env.MYSQL_DML_ENABLED === 'true' &&
   process.env.MYSQL_DDL_INTEGRATION_CONFIRM === 'isolated-database-schema';
@@ -60,6 +62,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
   let parentCreateRequested = false;
   let viewCreateRequested = false;
   let viewDropRequested = false;
+  let tableDropRequested = false;
   let applicationClosed = false;
   client.onmessage = (message) => {
     if (typeof message === 'object' && message !== null && 'id' in message && typeof message.id === 'number') {
@@ -394,6 +397,27 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
     };
     assert.ok(!afterDropColumn.columns.some((column) => column.columnName === 'renamed_note'));
 
+    const dropTableDescriptionResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    const dropTableDescription = dropTableDescriptionResponse.result?.structuredContent as { metadataRevision: string };
+    const dropTableResponse = await request('tools/call', {
+      name: 'drop_table',
+      arguments: {
+        schema,
+        table,
+        reason: 'Remove the isolated disposable table after verification',
+        confirmation: `DROP_TABLE:${dropTableDescription.metadataRevision}`,
+      },
+    });
+    const dropTableResult = dropTableResponse.result?.structuredContent as {
+      operation: string;
+      target: { schema: string; table: string };
+    };
+    assert.equal(dropTableResult.operation, 'drop_table');
+    assert.deepEqual(dropTableResult.target, { schema, table });
+    tableDropRequested = true;
+    const afterDropTableResponse = await request('tools/call', { name: 'describe_table', arguments: { schema, table } });
+    assert.equal(afterDropTableResponse.result?.isError, true, 'the dropped temporary table must be absent');
+
     await application.close();
     applicationClosed = true;
     const verificationConnection = await mysql.createConnection({
@@ -449,7 +473,7 @@ test('runs the opt-in CREATE TABLE contract against an explicitly isolated schem
       });
       try {
         if (viewCreateRequested && !viewDropRequested) await cleanupConnection.query(`DROP VIEW IF EXISTS \`${schema}\`.\`${view}\``);
-        if (createRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
+        if (createRequested && !tableDropRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${table}\``);
         if (parentCreateRequested) await cleanupConnection.query(`DROP TABLE IF EXISTS \`${schema}\`.\`${parentTable}\``);
       } finally {
         await cleanupConnection.end();

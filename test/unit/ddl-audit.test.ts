@@ -181,6 +181,21 @@ test('audits CREATE SCHEMA with allowlisted options and a reason hash instead of
   assert.doesNotMatch(lines.join('\n'), /Create a tenant catalog|CREATE SCHEMA/);
 });
 
+test('audits DROP TABLE with a reason hash and no confirmation token', () => {
+  const lines: string[] = [];
+  const reason = 'Remove the retired table with internal classification.';
+  const confirmation = `DROP_TABLE:${'a'.repeat(64)}`;
+  const attempt = createDdlAuditAttempt(
+    { schema: 'app', table: 'orders', reason, confirmation },
+    { writer: (line) => lines.push(line), operationId: () => 'drop-table-op', now: () => 1_000, operation: 'drop_table' },
+  );
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'drop_table');
+  assert.equal(completed.reason, '8f8d201875a9396b7cbc6ee753f26257696395b52ab647647b783045905bcc4c');
+  assert.doesNotMatch(lines.join('\n'), /Remove the retired table|DROP_TABLE:|DROP TABLE/iu);
+});
+
 test('classifies DDL failures without preserving driver messages', () => {
   const cases: readonly [unknown, boolean, string, string | undefined][] = [
     [new DdlPolicyError(), false, 'MYSQL_DDL_INVALID_ARGUMENT', undefined],

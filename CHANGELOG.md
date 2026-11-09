@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [#79 — feat: add controlled `drop_table`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/79): separate destructive opt-in, target-bound metadata revision confirmation, fail-closed dependency preflight, sanitized audit/outcomes, post-execution verification, and no automatic retry.
+
 ## 0.16.0 - 2026-11-09
 
 - [#78 — feat: add controlled `alter_table_drop_column`](https://github.com/VissotoFlavio/mysql-mcp-server/issues/78): separate strict opt-in and metadata-visibility attestation, exact `DROP_COLUMN` confirmation, fail-closed dependency preflight, sanitized audit/outcomes, post-execution verification, and no automatic retry guidance.

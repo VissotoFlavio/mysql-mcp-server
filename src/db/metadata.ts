@@ -1,3 +1,5 @@
+import { createHash, randomBytes } from 'node:crypto';
+
 import type { RowDataPacket } from 'mysql2';
 
 import { MAX_ALTER_TABLE_FOREIGN_KEY_COLUMNS } from '../tools/alter-table-add-foreign-key-input.js';
@@ -5,11 +7,17 @@ import type { AlterTableDropColumnInput } from '../tools/alter-table-drop-column
 import type { AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-foreign-key-input.js';
 import type { AlterTableModifyColumnDefinition, AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import type { CreateTableColumnType } from '../tools/create-table-input.js';
+import { dropTableMetadataRevision, type DropTableInput } from '../tools/drop-table-input.js';
 
 import type { ConnectionLayer } from './pool.js';
 
 export const MAX_METADATA_RESULTS = 100;
 const MAX_INDEX_METADATA_RESULTS = 1024;
+const TABLE_METADATA_ATTESTATION_TTL_MS = 5 * 60 * 1000;
+const MAX_TABLE_METADATA_ATTESTATIONS = 2048;
+const tableMetadataAttestations = new Map<string, Readonly<{ schema: string; table: string; fingerprint: string; expiresAt: number }>>();
+const tableMetadataFingerprints = new WeakMap<object, string>();
+const tableMetadataIdentities = new WeakMap<object, string>();
 
 const LIST_SCHEMAS_SQL = `
   SELECT SCHEMA_NAME AS schemaName
@@ -38,6 +46,7 @@ const DESCRIBE_TABLE_SQL = `
     tables.TABLE_SCHEMA AS schemaName,
     tables.TABLE_NAME AS tableName,
     tables.TABLE_TYPE AS tableType,
+    tables.CREATE_TIME AS createTime,
     columns.COLUMN_NAME AS columnName,
     columns.DATA_TYPE AS dataType,
     columns.IS_NULLABLE AS isNullable,
@@ -356,6 +365,34 @@ const VALIDATE_DROP_VIEW_DEPENDENCIES_SQL = `
   LIMIT ?
 `;
 
+const VALIDATE_DROP_TABLE_FOREIGN_KEYS_SQL = `
+  SELECT CONSTRAINT_SCHEMA AS constraintSchemaName, TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName,
+    CONSTRAINT_NAME AS constraintName, REFERENCED_TABLE_SCHEMA AS referencedSchemaName, REFERENCED_TABLE_NAME AS referencedTableName
+  FROM information_schema.KEY_COLUMN_USAGE
+  WHERE REFERENCED_TABLE_NAME IS NOT NULL
+    AND ((TABLE_SCHEMA = ? AND TABLE_NAME = ?) OR (REFERENCED_TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME = ?))
+  ORDER BY CONSTRAINT_SCHEMA ASC, TABLE_SCHEMA ASC, TABLE_NAME ASC, CONSTRAINT_NAME ASC
+  LIMIT ?
+`;
+
+const VALIDATE_DROP_TABLE_DEPENDENCIES_SQL = `
+  SELECT VIEW_SCHEMA AS viewSchemaName, VIEW_NAME AS viewName,
+    TABLE_SCHEMA AS tableSchemaName, TABLE_NAME AS tableName
+  FROM information_schema.VIEW_TABLE_USAGE
+  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  ORDER BY VIEW_SCHEMA ASC, VIEW_NAME ASC
+  LIMIT ?
+`;
+
+const VALIDATE_DROP_TABLE_TRIGGERS_SQL = `
+  SELECT TRIGGER_SCHEMA AS triggerSchemaName, TRIGGER_NAME AS triggerName,
+    EVENT_OBJECT_SCHEMA AS schemaName, EVENT_OBJECT_TABLE AS tableName
+  FROM information_schema.TRIGGERS
+  WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?
+  ORDER BY TRIGGER_SCHEMA ASC, TRIGGER_NAME ASC
+  LIMIT ?
+`;
+
 const VALIDATE_DROP_INDEX_FOREIGN_KEYS_SQL = `
   SELECT CONSTRAINT_SCHEMA AS constraintSchemaName, TABLE_SCHEMA AS schemaName, TABLE_NAME AS tableName,
     CONSTRAINT_NAME AS constraintName, COLUMN_NAME AS columnName, ORDINAL_POSITION AS ordinalPosition,
@@ -398,6 +435,7 @@ interface TableRow extends RowDataPacket {
 }
 
 interface TableDescriptionRow extends TableRow {
+  readonly createTime: string | Date | null;
   readonly columnName: string;
   readonly dataType: string;
   readonly isNullable: 'YES' | 'NO';
@@ -460,6 +498,26 @@ interface DropViewDependencyRow extends RowDataPacket {
   readonly viewSchemaName: string;
   readonly viewName: string;
   readonly tableSchemaName: string;
+  readonly tableName: string;
+}
+interface DropTableForeignKeyRow extends RowDataPacket {
+  readonly constraintSchemaName: string;
+  readonly schemaName: string;
+  readonly tableName: string;
+  readonly constraintName: string;
+  readonly referencedSchemaName: string;
+  readonly referencedTableName: string;
+}
+interface DropTableDependencyRow extends RowDataPacket {
+  readonly viewSchemaName: string;
+  readonly viewName: string;
+  readonly tableSchemaName: string;
+  readonly tableName: string;
+}
+interface DropTableTriggerRow extends RowDataPacket {
+  readonly triggerSchemaName: string;
+  readonly triggerName: string;
+  readonly schemaName: string;
   readonly tableName: string;
 }
 interface DropIndexForeignKeyRow extends RowDataPacket {
@@ -606,6 +664,7 @@ export interface ColumnMetadata {
 export interface TableDescription {
   readonly table: TableMetadata;
   readonly columns: readonly ColumnMetadata[];
+  readonly metadataRevision: string;
 }
 
 export interface DmlColumnMetadata extends ColumnMetadata {
@@ -709,6 +768,23 @@ export class DropViewVerificationError extends Error {
   constructor() {
     super('The dropped view could not be verified.');
     this.name = 'DropViewVerificationError';
+  }
+}
+
+export type DropTableMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_TABLE_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
+export class DropTableMetadataError extends Error {
+  constructor(
+    readonly code: DropTableMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DropTableMetadataError';
+  }
+}
+export class DropTableVerificationError extends Error {
+  constructor() {
+    super('The dropped table could not be verified.');
+    this.name = 'DropTableVerificationError';
   }
 }
 
@@ -822,6 +898,8 @@ const DROP_INDEX_METADATA_NOT_REMOVABLE = 'The named index is not a removable se
 const DROP_VIEW_METADATA_UNAVAILABLE = 'Unable to validate the requested view metadata.';
 const DROP_VIEW_METADATA_VIEW_ONLY = 'DROP VIEW is supported for existing views only.';
 const DROP_VIEW_METADATA_DEPENDENCIES = 'The requested view has known dependent views.';
+const DROP_TABLE_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
+const DROP_TABLE_METADATA_DEPENDENCIES = 'The requested table has known dependencies.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_UNAVAILABLE = 'Unable to validate the requested table metadata.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_BASE_TABLE_ONLY = 'ALTER TABLE ADD COLUMN metadata is supported for base tables only.';
 const ALTER_TABLE_ADD_COLUMN_METADATA_COLUMN_EXISTS = 'The requested column already exists.';
@@ -869,7 +947,58 @@ export async function listAccessibleTables(mysql: ConnectionLayer, schema: strin
   return rows.slice(0, MAX_METADATA_RESULTS).map(({ schemaName, tableName, tableType }) => ({ schemaName, tableName, tableType }));
 }
 
-export async function describeAccessibleTable(mysql: ConnectionLayer, schema: string, table: string): Promise<TableDescription | undefined> {
+/** Creates a stable, non-secret fingerprint for the bounded table description. */
+export function createTableMetadataRevision(description: Readonly<{ table: TableMetadata; columns: readonly ColumnMetadata[] }>): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ table: description.table, columns: description.columns }), 'utf8')
+    .digest('hex');
+}
+
+function createTableMetadataFingerprint(
+  description: Readonly<{ table: TableMetadata; columns: readonly ColumnMetadata[] }>,
+  createTime: string | Date | null | undefined,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        table: description.table,
+        columns: description.columns,
+        createTime: createTime instanceof Date ? createTime.toISOString() : (createTime ?? null),
+      }),
+      'utf8',
+    )
+    .digest('hex');
+}
+
+function issueTableMetadataAttestation(schema: string, table: string, fingerprint: string): string {
+  const now = Date.now();
+  for (const [revision, attestation] of tableMetadataAttestations) {
+    if (attestation.expiresAt <= now) tableMetadataAttestations.delete(revision);
+  }
+  if (tableMetadataAttestations.size >= MAX_TABLE_METADATA_ATTESTATIONS) throw new Error('Metadata attestation capacity is exhausted.');
+  const revision = randomBytes(32).toString('hex');
+  tableMetadataAttestations.set(revision, Object.freeze({ schema, table, fingerprint, expiresAt: now + TABLE_METADATA_ATTESTATION_TTL_MS }));
+  return revision;
+}
+
+function getTableMetadataAttestation(
+  revision: string,
+): Readonly<{ schema: string; table: string; fingerprint: string; expiresAt: number }> | undefined {
+  const attestation = tableMetadataAttestations.get(revision);
+  if (attestation === undefined) return undefined;
+  if (attestation.expiresAt <= Date.now()) {
+    tableMetadataAttestations.delete(revision);
+    return undefined;
+  }
+  return attestation;
+}
+
+export async function describeAccessibleTable(
+  mysql: ConnectionLayer,
+  schema: string,
+  table: string,
+  issueAttestation = false,
+): Promise<TableDescription | undefined> {
   const [rows] = await mysql.query<TableDescriptionRow[]>(queryOptions(mysql, DESCRIBE_TABLE_SQL), [schema, table, MAX_METADATA_RESULTS]);
   const boundedRows = rows.slice(0, MAX_METADATA_RESULTS);
   const firstRow = boundedRows[0];
@@ -878,7 +1007,7 @@ export async function describeAccessibleTable(mysql: ConnectionLayer, schema: st
     return undefined;
   }
 
-  return {
+  const description = {
     table: {
       schemaName: firstRow.schemaName,
       tableName: firstRow.tableName,
@@ -891,6 +1020,15 @@ export async function describeAccessibleTable(mysql: ConnectionLayer, schema: st
       columnKey,
     })),
   };
+  const fingerprint = createTableMetadataFingerprint(description, firstRow.createTime);
+  const result = Object.freeze({
+    ...description,
+    metadataRevision: issueAttestation ? issueTableMetadataAttestation(schema, table, fingerprint) : createTableMetadataRevision(description),
+  });
+  tableMetadataFingerprints.set(result, fingerprint);
+  if (firstRow.createTime !== null && firstRow.createTime !== undefined && String(firstRow.createTime).length > 0)
+    tableMetadataIdentities.set(result, String(firstRow.createTime));
+  return result;
 }
 
 /** @internal Reads structural metadata for one DML operation; callers must invoke this for every operation. */
@@ -1588,6 +1726,177 @@ export async function verifyDropViewMetadata(mysql: ConnectionLayer, schema: str
   } catch (error) {
     if (error instanceof DropViewVerificationError) throw error;
     throw new DropViewVerificationError();
+  }
+}
+
+function dropTableMetadataError(code: DropTableMetadataCode): DropTableMetadataError {
+  return new DropTableMetadataError(
+    code,
+    code === 'MYSQL_DDL_TABLE_INVALID'
+      ? 'DROP TABLE is supported for existing base tables only.'
+      : code === 'MYSQL_DDL_STRUCTURE_INVALID'
+        ? DROP_TABLE_METADATA_DEPENDENCIES
+        : DROP_TABLE_METADATA_UNAVAILABLE,
+  );
+}
+
+function validDropTableDescription(description: TableDescription, schema: string, table: string, requireAttestation = true): boolean {
+  if (!description || typeof description !== 'object') return false;
+  const attestation = requireAttestation ? getTableMetadataAttestation(description.metadataRevision) : undefined;
+  const fingerprint = tableMetadataFingerprints.get(description);
+  const identity = tableMetadataIdentities.get(description);
+  if (
+    !description.table ||
+    description.table.schemaName !== schema ||
+    description.table.tableName !== table ||
+    description.table.tableType !== 'BASE TABLE' ||
+    !Array.isArray(description.columns) ||
+    description.columns.length === 0 ||
+    description.columns.length > MAX_METADATA_RESULTS ||
+    !/^[0-9a-f]{64}$/u.test(description.metadataRevision) ||
+    (requireAttestation &&
+      (attestation === undefined || attestation.schema !== schema || attestation.table !== table || attestation.fingerprint !== fingerprint)) ||
+    fingerprint === undefined ||
+    identity === undefined
+  )
+    return false;
+  const names = new Set<string>();
+  for (const column of description.columns) {
+    if (
+      typeof column !== 'object' ||
+      column === null ||
+      !isNonEmptyString(column.columnName) ||
+      !isNonEmptyString(column.dataType) ||
+      typeof column.isNullable !== 'boolean' ||
+      typeof column.columnKey !== 'string' ||
+      names.has(normalizedIdentifierName(column.columnName))
+    )
+      return false;
+    names.add(normalizedIdentifierName(column.columnName));
+  }
+  return true;
+}
+
+/** @internal Validates one base table and rejects known dependencies before DROP TABLE. */
+export async function validateDropTableMetadata(mysql: ConnectionLayer, input: DropTableInput): Promise<Readonly<{ metadataRevision: string }>> {
+  let foreignKeys: DropTableForeignKeyRow[];
+  let dependencies: DropTableDependencyRow[];
+  let triggers: DropTableTriggerRow[];
+  let description: TableDescription | undefined;
+  const requestedRevision = dropTableMetadataRevision(input.confirmation);
+  const requestedAttestation = getTableMetadataAttestation(requestedRevision);
+  if (requestedAttestation === undefined || requestedAttestation.schema !== input.schema || requestedAttestation.table !== input.table)
+    throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  try {
+    description = await describeAccessibleTable(mysql, input.schema, input.table);
+    [foreignKeys] = await mysql.query<DropTableForeignKeyRow[]>(queryOptions(mysql, VALIDATE_DROP_TABLE_FOREIGN_KEYS_SQL), [
+      input.schema,
+      input.table,
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [dependencies] = await mysql.query<DropTableDependencyRow[]>(queryOptions(mysql, VALIDATE_DROP_TABLE_DEPENDENCIES_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+    [triggers] = await mysql.query<DropTableTriggerRow[]>(queryOptions(mysql, VALIDATE_DROP_TABLE_TRIGGERS_SQL), [
+      input.schema,
+      input.table,
+      MAX_METADATA_RESULTS + 1,
+    ]);
+  } catch {
+    throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+
+  if (description === undefined || !validDropTableDescription(description, input.schema, input.table, false)) {
+    throw dropTableMetadataError('MYSQL_DDL_TABLE_INVALID');
+  }
+  const currentFingerprint = tableMetadataFingerprints.get(description);
+  if (currentFingerprint === undefined || currentFingerprint !== requestedAttestation.fingerprint)
+    throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  if (
+    !Array.isArray(foreignKeys) ||
+    foreignKeys.length > MAX_METADATA_RESULTS ||
+    !Array.isArray(dependencies) ||
+    dependencies.length > MAX_METADATA_RESULTS ||
+    !Array.isArray(triggers) ||
+    triggers.length > MAX_METADATA_RESULTS
+  )
+    throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+
+  for (const row of foreignKeys) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.constraintSchemaName) ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      !isNonEmptyString(row.constraintName) ||
+      !isNonEmptyString(row.referencedSchemaName) ||
+      !isNonEmptyString(row.referencedTableName) ||
+      !(
+        (row.schemaName === input.schema && row.tableName === input.table) ||
+        (row.referencedSchemaName === input.schema && row.referencedTableName === input.table)
+      )
+    )
+      throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  for (const row of dependencies) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.viewSchemaName) ||
+      !isNonEmptyString(row.viewName) ||
+      !isNonEmptyString(row.tableSchemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      row.tableSchemaName !== input.schema ||
+      row.tableName !== input.table
+    )
+      throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  for (const row of triggers) {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString(row.triggerSchemaName) ||
+      !isNonEmptyString(row.triggerName) ||
+      !isNonEmptyString(row.schemaName) ||
+      !isNonEmptyString(row.tableName) ||
+      row.schemaName !== input.schema ||
+      row.tableName !== input.table
+    )
+      throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (foreignKeys.length > 0 || dependencies.length > 0 || triggers.length > 0) {
+    throw dropTableMetadataError('MYSQL_DDL_STRUCTURE_INVALID');
+  }
+  const latestDescription = await describeAccessibleTable(mysql, input.schema, input.table).catch(() => undefined);
+  if (
+    latestDescription === undefined ||
+    !validDropTableDescription(latestDescription, input.schema, input.table, false) ||
+    tableMetadataFingerprints.get(latestDescription) !== requestedAttestation.fingerprint
+  )
+    throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  return Object.freeze({ metadataRevision: requestedRevision });
+}
+
+/** Consumes one recent target-bound confirmation before submitting destructive DDL. */
+export function consumeDropTableMetadataAttestation(schema: string, table: string, metadataRevision: string): void {
+  const attestation = getTableMetadataAttestation(metadataRevision);
+  if (attestation === undefined || attestation.schema !== schema || attestation.table !== table)
+    throw dropTableMetadataError('MYSQL_DDL_METADATA_INVALID');
+  tableMetadataAttestations.delete(metadataRevision);
+}
+
+/** @internal Confirms that the named table is absent after DROP TABLE. */
+export async function verifyDropTableMetadata(mysql: ConnectionLayer, schema: string, table: string): Promise<void> {
+  try {
+    if ((await describeAccessibleTable(mysql, schema, table)) !== undefined) throw new DropTableVerificationError();
+  } catch (error) {
+    if (error instanceof DropTableVerificationError) throw error;
+    throw new DropTableVerificationError();
   }
 }
 
