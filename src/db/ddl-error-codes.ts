@@ -1,5 +1,14 @@
 export type DdlDriverClassification =
-  'permission' | 'tableExists' | 'tableInvalid' | 'indexExists' | 'duplicateData' | 'columnExists' | 'lockTimeout' | 'deadlock' | 'structure';
+  | 'permission'
+  | 'tableExists'
+  | 'schemaExists'
+  | 'tableInvalid'
+  | 'indexExists'
+  | 'duplicateData'
+  | 'columnExists'
+  | 'lockTimeout'
+  | 'deadlock'
+  | 'structure';
 
 /** MySQL codes that are safe to classify at the controlled DDL boundary. */
 export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverClassification>> = Object.freeze({
@@ -11,6 +20,8 @@ export const DDL_DRIVER_CODE_CLASSIFICATIONS: Readonly<Record<string, DdlDriverC
   1142: 'permission',
   ER_TABLE_EXISTS_ERROR: 'tableExists',
   1050: 'tableExists',
+  ER_DB_CREATE_EXISTS: 'schemaExists',
+  1007: 'schemaExists',
   ER_NO_SUCH_TABLE: 'tableInvalid',
   1146: 'tableInvalid',
   ER_BAD_TABLE_ERROR: 'tableInvalid',
@@ -61,6 +72,7 @@ export function classifyDdlDriverCode(value: unknown): DdlDriverClassification |
   return [
     'permission',
     'tableExists',
+    'schemaExists',
     'tableInvalid',
     'indexExists',
     'duplicateData',

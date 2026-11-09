@@ -147,6 +147,21 @@ test('hashes normalized CREATE TABLE requests and emits only sanitized structura
   assert.doesNotMatch(lines.join('\n'), /CREATE TABLE|BIGINT|VARCHAR|AUTO_INCREMENT/);
 });
 
+test('audits CREATE SCHEMA with allowlisted options and a reason hash instead of raw reason text', () => {
+  const lines: string[] = [];
+  const reason = 'Create a tenant catalog with internal classification.';
+  const attempt = createDdlAuditAttempt(
+    { schema: 'tenant_catalog', charset: 'utf8mb4', collation: 'utf8mb4_0900_ai_ci', reason },
+    { writer: (line) => lines.push(line), operationId: () => 'schema-op', now: () => 1_000, operation: 'create_schema' },
+  );
+  attempt.markSubmitted();
+  const completed = attempt.emit();
+  assert.equal(completed.operation, 'create_schema');
+  assert.deepEqual(completed.target, { schema: 'tenant_catalog', charset: 'utf8mb4', collation: 'utf8mb4_0900_ai_ci' });
+  assert.equal(completed.reason, '3ff922ebb288508062da7bddf053af553bab3de9e77eded3ab4d287214bc3eed');
+  assert.doesNotMatch(lines.join('\n'), /Create a tenant catalog|CREATE SCHEMA/);
+});
+
 test('classifies DDL failures without preserving driver messages', () => {
   const cases: readonly [unknown, boolean, string, string | undefined][] = [
     [new DdlPolicyError(), false, 'MYSQL_DDL_INVALID_ARGUMENT', undefined],

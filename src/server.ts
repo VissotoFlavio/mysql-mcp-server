@@ -17,6 +17,7 @@ import { registerAlterTableDropForeignKeyTool } from './tools/alter-table-drop-f
 import { registerAlterTableModifyColumnTool } from './tools/alter-table-modify-column.js';
 import { registerAlterTableRenameColumnTool } from './tools/alter-table-rename-column.js';
 import { registerCreateIndexTool } from './tools/create-index.js';
+import { registerCreateSchemaTool } from './tools/create-schema.js';
 import { registerCreateTableTool } from './tools/create-table.js';
 import { registerCreateUniqueIndexTool } from './tools/create-unique-index.js';
 import { registerCreateViewTool } from './tools/create-view.js';
@@ -66,6 +67,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerUpdateRowsTool(server, mysql);
     registerDeleteRowsTool(server, mysql);
   }
+  if (mysql.createSchemaEnabled) registerCreateSchemaTool(server, mysql);
   if (mysql.ddlEnabled) {
     registerCreateTableTool(server, mysql);
     registerCreateViewTool(server, mysql);
