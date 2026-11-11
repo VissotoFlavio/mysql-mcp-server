@@ -10,7 +10,8 @@
   "files": [
     "dist",
     ".env.example",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "docs/sanitized-workflow-demo.md"
   ],
   "engines": {
     "node": ">=22"

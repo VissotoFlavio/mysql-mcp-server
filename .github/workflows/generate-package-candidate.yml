@@ -188,7 +188,7 @@ jobs:
 
           npm version "$CANDIDATE_VERSION" --no-git-tag-version --ignore-scripts
           npm pack --json > "$RUNNER_TEMP/pack.json"
-          package_name="$(node --input-type=module --eval "import fs from 'node:fs'; const [result] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/pack.json', 'utf8')); const allowed = new Set(['.env.example', 'CHANGELOG.md', 'LICENSE', 'README.md', 'package.json']); const unexpected = result?.files?.map(({ path }) => path).filter((path) => !allowed.has(path) && !path.startsWith('dist/')) ?? []; if (!result?.filename || !result.files?.some(({ path }) => path === 'dist/server.js') || unexpected.length > 0) { process.stderr.write('npm pack did not produce the expected runtime-only package.\\n'); process.exit(1); } process.stdout.write(result.filename);")"
+          package_name="$(node --input-type=module --eval "import fs from 'node:fs'; const [result] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/pack.json', 'utf8')); const allowed = new Set(['.env.example', 'CHANGELOG.md', 'LICENSE', 'README.md', 'package.json', 'docs/sanitized-workflow-demo.md']); const unexpected = result?.files?.map(({ path }) => path).filter((path) => !allowed.has(path) && !path.startsWith('dist/')) ?? []; if (!result?.filename || !result.files?.some(({ path }) => path === 'dist/server.js') || unexpected.length > 0) { process.stderr.write('npm pack did not produce the expected runtime-only package.\\n'); process.exit(1); } process.stdout.write(result.filename);")"
           [[ -f "$package_name" ]] || {
             echo '::error::npm pack did not produce the expected package file.'
             exit 1

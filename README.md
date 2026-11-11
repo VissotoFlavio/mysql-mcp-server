@@ -14,6 +14,86 @@ For `drop_schema`, enable `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` only alongside `M
 
 **Experimental — available for controlled evaluation.** `mysql-mcp-server` is under active development and is appropriate for local testing with an isolated, masked, or otherwise non-sensitive database and a dedicated least-privilege account. It is not presented as production-ready; interfaces, operational guidance, and behavior may change before a stable release.
 
+## Quick start: use an official package
+
+This is the shortest path for a user who does not have a repository clone. Download the `.tgz` asset from an official GitHub Release, choose a dedicated local install directory, and install the package with its production dependencies. Candidate packages from prereleases are for controlled validation only.
+
+```bash
+npm install --omit=dev --prefix /absolute/path/to/mysql-mcp-server /absolute/path/to/downloads/mysql-mcp-server-<version>.tgz
+```
+
+Copy the packaged blank-variable template to a local, untracked file. Edit that file on the machine that will launch the server; do not put credentials or TLS material in the MCP client's JSON configuration.
+
+```bash
+cp /absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/.env.example /absolute/path/to/mysql-mcp-server/.env
+# edit /absolute/path/to/mysql-mcp-server/.env
+node --env-file=/absolute/path/to/mysql-mcp-server/.env /absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/dist/server.js
+```
+
+On PowerShell, use `Copy-Item` for the copy step:
+
+```powershell
+npm install --omit=dev --prefix C:\path\to\mysql-mcp-server C:\path\to\downloads\mysql-mcp-server-<version>.tgz
+Copy-Item C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\.env.example C:\path\to\mysql-mcp-server\.env
+node --env-file=C:\path\to\mysql-mcp-server\.env C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\dist\server.js
+```
+
+The installed executable is `.../node_modules/.bin/mysql-mcp-server` (`mysql-mcp-server.cmd` on Windows). Use that path when the MCP client can inject environment variables itself. When using a local `.env` file, invoke `node` as above so `--env-file` is processed before the server script.
+
+The generic MCP client process configuration is:
+
+```json
+{
+  "mcpServers": {
+    "mysql-local": {
+      "command": "node",
+      "args": [
+        "--env-file=/absolute/path/to/mysql-mcp-server/.env",
+        "/absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/dist/server.js"
+      ]
+    }
+  }
+}
+```
+
+For Codex, the equivalent entry in `config.toml` is:
+
+```toml
+[mcp_servers.mysql-local]
+command = "node"
+args = [
+  "--env-file=/absolute/path/to/mysql-mcp-server/.env",
+  "/absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/dist/server.js",
+]
+```
+
+Adapt the property names to the selected MCP client. This example contains no credentials. Prefer the client's secret or environment injection mechanism when available, then omit `--env-file` and pass only the required `MYSQL_*` values to the child process. The child process uses stdio: its stdout is reserved for MCP protocol messages, so do not add banners, `console.log` output, or a wrapper that writes status text there; operational logs belong on stderr.
+
+### First safe MCP session
+
+With `MYSQL_DML_ENABLED=false` and `MYSQL_DDL_ENABLED=false`, start by discovering only what the account can see:
+
+1. Call `list_accessible_schemas`.
+2. Call `list_accessible_tables` for one returned schema.
+3. Call `describe_table` for one returned table.
+4. Call `execute_read_only_query` with one policy-approved `SELECT`, bound `parameters`, and a literal `LIMIT` from 0 through 100.
+5. Call `explain_read_only_query` with the same approved query and parameters; do not prepend `EXPLAIN`.
+
+The default session registers only these bounded read-only tools. Capabilities are added only by explicit configuration:
+
+| Opt-in                                                                                                 | Additional tools or capability                                                                                                                                                                                                                        | Boundary                                                                                            |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `MYSQL_DML_ENABLED=true`                                                                               | `insert_rows`, `update_rows`, `delete_rows`                                                                                                                                                                                                           | Dedicated DML tools, bounded requests, direct operator confirmation, and no automatic retry.        |
+| `MYSQL_DDL_ENABLED=true`                                                                               | `create_table`, `create_view`, `create_index`, `create_unique_index`, `drop_index`, `alter_table_add_column`, `alter_table_add_foreign_key`, `alter_table_drop_foreign_key`, `alter_table_modify_column`, `alter_table_rename_column`, `rename_table` | Structured, bounded DDL only; no arbitrary SQL, grants, migrations, or credential changes.          |
+| DDL plus `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true`                                                        | `create_schema`                                                                                                                                                                                                                                       | Separate schema-creation opt-in and least-privilege `CREATE` access.                                |
+| DDL plus `MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE=true`                                                  | `drop_view`                                                                                                                                                                                                                                           | Requires an explicit completeness attestation and exact confirmation.                               |
+| DDL plus `MYSQL_DDL_DROP_COLUMN_ENABLED=true` and `MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE=true`       | `alter_table_drop_column`                                                                                                                                                                                                                             | Separate destructive opt-in and fail-closed dependency metadata.                                    |
+| DDL plus `MYSQL_DDL_DROP_TABLE_ENABLED=true` and `MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE=true`         | `drop_table`                                                                                                                                                                                                                                          | Separate destructive opt-in, target-bound confirmation, and dependency preflight.                   |
+| DDL plus `MYSQL_DDL_TRUNCATE_TABLE_ENABLED=true` and `MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE=true` | `truncate_table`                                                                                                                                                                                                                                      | Separate destructive opt-in, target-bound confirmation, and foreign-key preflight.                  |
+| DDL plus `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` and a non-empty `MYSQL_DDL_DROP_SCHEMA_ALLOWLIST`        | `drop_schema`                                                                                                                                                                                                                                         | Disposable-schema allowlist, explicit confirmation, backup/recovery review, and no automatic retry. |
+
+Every write or schema change still depends on the configured MySQL account's effective permissions and requires the documented operator confirmation. Leave DML and DDL disabled until the workflow, target, privileges, and recovery plan are explicit.
+
 ## Why this exists
 
 When a developer is investigating a legacy or unfamiliar MySQL database, an AI agent needs accurate context before it can help. Manually copying schema details into a conversation is slow, becomes stale, and can expose more information than necessary.
@@ -70,24 +150,6 @@ The [sanitized MCP workflow transcript](docs/sanitized-workflow-demo.md) shows m
 - A reachable MySQL server and an account with the intended least-privilege access. The account's effective permissions determine the schemas, tables, views, and (when enabled) target inserts available to the tools.
 - An MCP client that can launch a local stdio process. Consult that client's documentation for its configuration file and syntax; this project does not prescribe a particular client or vendor.
 - A secure way to supply process environment variables. Do not put credentials, connection strings, or TLS material in source control, chat transcripts, or a client configuration file.
-
-## Install a release package
-
-Official GitHub Releases generated by the release workflow contain an installable `.tgz` package. Candidate packages are attached only to prereleases generated from an approved release or hotfix pull request; use them solely for controlled validation before the final merge.
-
-Download the desired package asset, then install it into a dedicated local directory. This installs its production dependencies and does not require a clone of this repository:
-
-```bash
-npm install --omit=dev --prefix /absolute/path/to/mysql-mcp-server /absolute/path/to/mysql-mcp-server-<version>.tgz
-```
-
-Launch the installed server with Node and provide configuration through the environment or a local untracked `.env` file:
-
-```bash
-node --env-file=/absolute/path/to/mysql-mcp-server/.env /absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/dist/server.js
-```
-
-The package also exposes `mysql-mcp-server` as a Node executable when it is installed globally or its local `node_modules/.bin` directory is on `PATH`.
 
 ## Install from source, build, and start
 
@@ -255,6 +317,7 @@ Run the local checks that do not require a database or credentials:
 
 ```bash
 npm run format:check
+npm run check
 npm run lint
 npm test
 ```
