@@ -7,6 +7,7 @@ import type { AlterTableDropColumnInput } from '../tools/alter-table-drop-column
 import type { AlterTableDropForeignKeyInput } from '../tools/alter-table-drop-foreign-key-input.js';
 import type { AlterTableModifyColumnDefinition, AlterTableModifyColumnInput } from '../tools/alter-table-modify-column-input.js';
 import type { CreateTableColumnType } from '../tools/create-table-input.js';
+import { dropSchemaMetadataRevision, type DropSchemaInput } from '../tools/drop-schema-input.js';
 import { dropTableMetadataRevision, type DropTableInput } from '../tools/drop-table-input.js';
 import { truncateTableMetadataRevision, type TruncateTableInput } from '../tools/truncate-table-input.js';
 
@@ -21,6 +22,12 @@ const tableMetadataFingerprints = new WeakMap<object, string>();
 const tableMetadataShapeFingerprints = new WeakMap<object, string>();
 const tableMetadataIdentities = new WeakMap<object, string>();
 const tableMetadataCompleteness = new WeakMap<object, boolean>();
+const SCHEMA_METADATA_ATTESTATION_TTL_MS = 5 * 60 * 1000;
+const MAX_SCHEMA_METADATA_ATTESTATIONS = 2048;
+type SchemaMetadataAttestation = Readonly<{ schema: string; fingerprint: string; expiresAt: number }>;
+type SchemaMetadataScope = object;
+const schemaMetadataAttestations = new WeakMap<SchemaMetadataScope, Map<string, SchemaMetadataAttestation>>();
+const schemaMetadataRevisionBySchema = new WeakMap<SchemaMetadataScope, Map<string, string>>();
 
 const LIST_SCHEMAS_SQL = `
   SELECT SCHEMA_NAME AS schemaName
@@ -33,6 +40,47 @@ const VALIDATE_CREATE_SCHEMA_METADATA_SQL = `
   SELECT SCHEMA_NAME AS schemaName
   FROM information_schema.SCHEMATA
   WHERE SCHEMA_NAME = ?
+  LIMIT ?
+`;
+
+const VALIDATE_DROP_SCHEMA_METADATA_SQL = `
+  SELECT SCHEMA_NAME AS schemaName
+  FROM information_schema.SCHEMATA
+  WHERE SCHEMA_NAME = ?
+  LIMIT 2
+`;
+const VALIDATE_DROP_SCHEMA_TABLES_SQL = `
+  SELECT tables.TABLE_NAME AS objectName,
+         tables.TABLE_TYPE AS objectType,
+         tables.ENGINE AS engine,
+         tables.CREATE_TIME AS creationIdentity,
+         innodbTables.TABLE_ID AS durableIdentity
+  FROM information_schema.TABLES AS tables
+  LEFT JOIN information_schema.INNODB_TABLES AS innodbTables
+    ON innodbTables.NAME = CONCAT(tables.TABLE_SCHEMA, '/', tables.TABLE_NAME)
+  WHERE tables.TABLE_SCHEMA = ?
+  ORDER BY tables.TABLE_NAME ASC
+  LIMIT ?
+`;
+const VALIDATE_DROP_SCHEMA_ROUTINES_SQL = `
+  SELECT ROUTINE_NAME AS objectName, CREATED AS creationIdentity
+  FROM information_schema.ROUTINES
+  WHERE ROUTINE_SCHEMA = ?
+  ORDER BY ROUTINE_NAME ASC
+  LIMIT ?
+`;
+const VALIDATE_DROP_SCHEMA_EVENTS_SQL = `
+  SELECT EVENT_NAME AS objectName, CREATED AS creationIdentity
+  FROM information_schema.EVENTS
+  WHERE EVENT_SCHEMA = ?
+  ORDER BY EVENT_NAME ASC
+  LIMIT ?
+`;
+const VALIDATE_DROP_SCHEMA_TRIGGERS_SQL = `
+  SELECT TRIGGER_NAME AS objectName, CREATED AS creationIdentity
+  FROM information_schema.TRIGGERS
+  WHERE TRIGGER_SCHEMA = ?
+  ORDER BY TRIGGER_NAME ASC
   LIMIT ?
 `;
 
@@ -431,6 +479,14 @@ interface SchemaRow extends RowDataPacket {
   readonly schemaName: string;
 }
 
+interface DropSchemaObjectRow extends RowDataPacket {
+  readonly objectName: string;
+  readonly objectType?: string;
+  readonly engine?: unknown;
+  readonly creationIdentity?: unknown;
+  readonly durableIdentity?: unknown;
+}
+
 interface TableRow extends RowDataPacket {
   readonly schemaName: string;
   readonly tableName: string;
@@ -651,6 +707,23 @@ export interface SchemaMetadata {
   readonly schemaName: string;
 }
 
+export interface DropSchemaImpactGroup {
+  readonly count: number;
+  readonly names: readonly string[];
+}
+
+export interface DropSchemaImpact {
+  readonly tables: DropSchemaImpactGroup;
+  readonly views: DropSchemaImpactGroup;
+  readonly otherObjects: DropSchemaImpactGroup;
+}
+
+export interface DropSchemaPreflight {
+  readonly impact: DropSchemaImpact;
+  readonly metadataRevision: string;
+  readonly confirmation: string;
+}
+
 export interface TableMetadata {
   readonly schemaName: string;
   readonly tableName: string;
@@ -737,6 +810,23 @@ export class CreateSchemaMetadataError extends Error {
   ) {
     super(message);
     this.name = 'CreateSchemaMetadataError';
+  }
+}
+
+export type DropSchemaMetadataCode = 'MYSQL_DDL_METADATA_INVALID' | 'MYSQL_DDL_SCHEMA_INVALID' | 'MYSQL_DDL_STRUCTURE_INVALID';
+export class DropSchemaMetadataError extends Error {
+  constructor(
+    readonly code: DropSchemaMetadataCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DropSchemaMetadataError';
+  }
+}
+export class DropSchemaVerificationError extends Error {
+  constructor() {
+    super('The dropped schema could not be verified.');
+    this.name = 'DropSchemaVerificationError';
   }
 }
 
@@ -1472,6 +1562,205 @@ export async function validateCreateSchemaMetadata(mysql: ConnectionLayer, schem
     }
   }
   if (rows.length === 1) throw new CreateSchemaMetadataError('MYSQL_DDL_SCHEMA_EXISTS', CREATE_SCHEMA_METADATA_EXISTS);
+}
+
+const DROP_SCHEMA_METADATA_UNAVAILABLE = 'Unable to validate the requested schema metadata.';
+const DROP_SCHEMA_METADATA_SCHEMA_INVALID = 'The target schema must be an existing accessible schema.';
+const DROP_SCHEMA_METADATA_STRUCTURE_INVALID = 'The target schema metadata contains unsupported objects.';
+
+function dropSchemaMetadataError(code: DropSchemaMetadataCode): DropSchemaMetadataError {
+  return new DropSchemaMetadataError(
+    code,
+    code === 'MYSQL_DDL_SCHEMA_INVALID'
+      ? DROP_SCHEMA_METADATA_SCHEMA_INVALID
+      : code === 'MYSQL_DDL_STRUCTURE_INVALID'
+        ? DROP_SCHEMA_METADATA_STRUCTURE_INVALID
+        : DROP_SCHEMA_METADATA_UNAVAILABLE,
+  );
+}
+
+function metadataAttestationScope(mysql: ConnectionLayer): SchemaMetadataScope {
+  return mysql.metadataAttestationScope ?? mysql;
+}
+
+function schemaMetadataMaps(scope: SchemaMetadataScope): Readonly<{
+  attestations: Map<string, SchemaMetadataAttestation>;
+  revisionsBySchema: Map<string, string>;
+}> {
+  let attestations = schemaMetadataAttestations.get(scope);
+  if (attestations === undefined) {
+    attestations = new Map();
+    schemaMetadataAttestations.set(scope, attestations);
+  }
+  let revisionsBySchema = schemaMetadataRevisionBySchema.get(scope);
+  if (revisionsBySchema === undefined) {
+    revisionsBySchema = new Map();
+    schemaMetadataRevisionBySchema.set(scope, revisionsBySchema);
+  }
+  return { attestations, revisionsBySchema };
+}
+
+function issueSchemaMetadataAttestation(scope: SchemaMetadataScope, schema: string, fingerprint: string): string {
+  const { attestations, revisionsBySchema } = schemaMetadataMaps(scope);
+  const now = Date.now();
+  for (const [revision, attestation] of attestations) {
+    if (attestation.expiresAt <= now) {
+      attestations.delete(revision);
+      if (revisionsBySchema.get(attestation.schema) === revision) revisionsBySchema.delete(attestation.schema);
+    }
+  }
+  const previousRevision = revisionsBySchema.get(schema);
+  if (previousRevision !== undefined) {
+    const previous = attestations.get(previousRevision);
+    if (previous !== undefined && previous.fingerprint === fingerprint && previous.expiresAt > now) return previousRevision;
+    attestations.delete(previousRevision);
+    revisionsBySchema.delete(schema);
+  }
+  if (attestations.size >= MAX_SCHEMA_METADATA_ATTESTATIONS) throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const revision = randomBytes(32).toString('hex');
+  attestations.set(revision, Object.freeze({ schema, fingerprint, expiresAt: now + SCHEMA_METADATA_ATTESTATION_TTL_MS }));
+  revisionsBySchema.set(schema, revision);
+  return revision;
+}
+
+function getSchemaMetadataAttestation(scope: SchemaMetadataScope, revision: string): SchemaMetadataAttestation | undefined {
+  const { attestations, revisionsBySchema } = schemaMetadataMaps(scope);
+  const attestation = attestations.get(revision);
+  if (attestation === undefined) return undefined;
+  if (attestation.expiresAt <= Date.now()) {
+    attestations.delete(revision);
+    if (revisionsBySchema.get(attestation.schema) === revision) revisionsBySchema.delete(attestation.schema);
+    return undefined;
+  }
+  return attestation;
+}
+
+function validDropSchemaObjectRows(rows: unknown, allowType: boolean): rows is readonly DropSchemaObjectRow[] {
+  if (!Array.isArray(rows) || rows.length > MAX_METADATA_RESULTS) return false;
+  return rows.every((row) => {
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !isNonEmptyString((row as DropSchemaObjectRow).objectName) ||
+      !validDropSchemaCreationIdentity((row as DropSchemaObjectRow).creationIdentity)
+    )
+      return false;
+    if (!allowType) return true;
+    const objectType = (row as DropSchemaObjectRow).objectType;
+    return objectType === 'BASE TABLE' || objectType === 'VIEW' || objectType === 'SYSTEM VIEW';
+  });
+}
+
+function validDropSchemaCreationIdentity(value: unknown): value is string | Date {
+  if (value instanceof Date) return Number.isFinite(value.getTime());
+  return typeof value === 'string' && value.length <= 128 && value.trim().length > 0 && !/[\p{Cc}\p{Cf}]/u.test(value);
+}
+
+function normalizeDropSchemaCreationIdentity(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function normalizeDropSchemaDurableIdentity(value: unknown): string | undefined {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
+  if (typeof value !== 'string' || !/^\d+$/u.test(value)) return undefined;
+  const normalized = Number(value);
+  return Number.isSafeInteger(normalized) && normalized > 0 ? String(normalized) : undefined;
+}
+
+async function readDropSchemaMetadata(mysql: ConnectionLayer, schema: string): Promise<Readonly<{ impact: DropSchemaImpact; fingerprint: string }>> {
+  let schemas: SchemaRow[];
+  let tables: DropSchemaObjectRow[];
+  let routines: DropSchemaObjectRow[];
+  let events: DropSchemaObjectRow[];
+  let triggers: DropSchemaObjectRow[];
+  try {
+    [schemas, tables, routines, events, triggers] = await Promise.all([
+      mysql.query<SchemaRow[]>(queryOptions(mysql, VALIDATE_DROP_SCHEMA_METADATA_SQL), [schema]),
+      mysql.query<DropSchemaObjectRow[]>(queryOptions(mysql, VALIDATE_DROP_SCHEMA_TABLES_SQL), [schema, MAX_METADATA_RESULTS + 1]),
+      mysql.query<DropSchemaObjectRow[]>(queryOptions(mysql, VALIDATE_DROP_SCHEMA_ROUTINES_SQL), [schema, MAX_METADATA_RESULTS + 1]),
+      mysql.query<DropSchemaObjectRow[]>(queryOptions(mysql, VALIDATE_DROP_SCHEMA_EVENTS_SQL), [schema, MAX_METADATA_RESULTS + 1]),
+      mysql.query<DropSchemaObjectRow[]>(queryOptions(mysql, VALIDATE_DROP_SCHEMA_TRIGGERS_SQL), [schema, MAX_METADATA_RESULTS + 1]),
+    ]).then(
+      (results) =>
+        results.map(([rows]) => rows) as [SchemaRow[], DropSchemaObjectRow[], DropSchemaObjectRow[], DropSchemaObjectRow[], DropSchemaObjectRow[]],
+    );
+  } catch {
+    throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  }
+  if (!Array.isArray(schemas) || schemas.length !== 1 || typeof schemas[0] !== 'object' || schemas[0] === null || schemas[0].schemaName !== schema)
+    throw dropSchemaMetadataError('MYSQL_DDL_SCHEMA_INVALID');
+  if (
+    !validDropSchemaObjectRows(tables, true) ||
+    !validDropSchemaObjectRows(routines, false) ||
+    !validDropSchemaObjectRows(events, false) ||
+    !validDropSchemaObjectRows(triggers, false)
+  )
+    throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  if (routines.length > 0 || events.length > 0 || triggers.length > 0 || tables.some((row) => row.objectType !== 'BASE TABLE'))
+    throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const baseTables = tables;
+  if (
+    baseTables.length === 0 ||
+    baseTables.some((row) => row.engine !== 'InnoDB' || normalizeDropSchemaDurableIdentity(row.durableIdentity) === undefined)
+  )
+    throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+
+  const tableNames = baseTables.map((row) => row.objectName);
+  const impact: DropSchemaImpact = Object.freeze({
+    tables: Object.freeze({ count: tableNames.length, names: Object.freeze(tableNames) }),
+    views: Object.freeze({ count: 0, names: Object.freeze([] as string[]) }),
+    otherObjects: Object.freeze({ count: 0, names: Object.freeze([] as string[]) }),
+  });
+  const objectIdentities = [
+    ...baseTables.map((row) => ({
+      kind: 'table',
+      name: row.objectName,
+      type: row.objectType,
+      identity: normalizeDropSchemaCreationIdentity(row.creationIdentity as string | Date),
+      durableIdentity: normalizeDropSchemaDurableIdentity(row.durableIdentity),
+    })),
+  ];
+  const fingerprint = createHash('sha256').update(JSON.stringify({ impact, objectIdentities }), 'utf8').digest('hex');
+  return Object.freeze({ impact, fingerprint });
+}
+
+/** Reads bounded, sanitized impact metadata and issues a short-lived confirmation. */
+export async function inspectDropSchemaMetadata(mysql: ConnectionLayer, schema: string): Promise<DropSchemaPreflight> {
+  const { impact, fingerprint } = await readDropSchemaMetadata(mysql, schema);
+  const metadataRevision = issueSchemaMetadataAttestation(metadataAttestationScope(mysql), schema, fingerprint);
+  return Object.freeze({ impact, metadataRevision, confirmation: `DROP_SCHEMA:${metadataRevision}` });
+}
+
+/** Rechecks the target snapshot before one DROP SCHEMA attempt. */
+export async function validateDropSchemaMetadata(mysql: ConnectionLayer, input: DropSchemaInput): Promise<Readonly<{ metadataRevision: string }>> {
+  if (input.confirmation === undefined) throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const requestedRevision = dropSchemaMetadataRevision(input.confirmation);
+  const scope = metadataAttestationScope(mysql);
+  const attestation = getSchemaMetadataAttestation(scope, requestedRevision);
+  if (attestation === undefined || attestation.schema !== input.schema) throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  const current = await readDropSchemaMetadata(mysql, input.schema);
+  if (current.fingerprint !== attestation.fingerprint) throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  return Object.freeze({ metadataRevision: requestedRevision });
+}
+
+export function consumeDropSchemaMetadataAttestation(mysql: ConnectionLayer, schema: string, metadataRevision: string): void {
+  const scope = metadataAttestationScope(mysql);
+  const { attestations, revisionsBySchema } = schemaMetadataMaps(scope);
+  const attestation = getSchemaMetadataAttestation(scope, metadataRevision);
+  if (attestation === undefined || attestation.schema !== schema) throw dropSchemaMetadataError('MYSQL_DDL_METADATA_INVALID');
+  attestations.delete(metadataRevision);
+  if (revisionsBySchema.get(schema) === metadataRevision) revisionsBySchema.delete(schema);
+}
+
+/** Confirms that the named schema is absent after DROP SCHEMA. */
+export async function verifyDropSchemaMetadata(mysql: ConnectionLayer, schema: string): Promise<void> {
+  try {
+    const [rows] = await mysql.query<SchemaRow[]>(queryOptions(mysql, VALIDATE_DROP_SCHEMA_METADATA_SQL), [schema]);
+    if (!Array.isArray(rows) || rows.length !== 0) throw new DropSchemaVerificationError();
+  } catch (error) {
+    if (error instanceof DropSchemaVerificationError) throw error;
+    throw new DropSchemaVerificationError();
+  }
 }
 
 /** @internal Reads bounded metadata and duplicate existence before one CREATE UNIQUE INDEX attempt. */

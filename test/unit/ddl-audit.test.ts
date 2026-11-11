@@ -196,6 +196,17 @@ test('audits DROP TABLE with a reason hash and no confirmation token', () => {
   assert.doesNotMatch(lines.join('\n'), /Remove the retired table|DROP_TABLE:|DROP TABLE/iu);
 });
 
+test('does not infer DROP SCHEMA from an ambiguous generic schema/reason request', () => {
+  const attempt = createDdlAuditAttempt({ schema: 'app', reason: 'Remove the schema.' }, { writer: () => {} });
+  assert.notEqual(attempt.emit().operation, 'drop_schema');
+
+  const explicit = createDdlAuditAttempt(
+    { schema: 'app', reason: 'Remove the schema.', confirmation: `DROP_SCHEMA:${'a'.repeat(64)}` },
+    { writer: () => {}, operation: 'drop_schema' },
+  );
+  assert.equal(explicit.emit().operation, 'drop_schema');
+});
+
 test('classifies DDL failures without preserving driver messages', () => {
   const cases: readonly [unknown, boolean, string, string | undefined][] = [
     [new DdlPolicyError(), false, 'MYSQL_DDL_INVALID_ARGUMENT', undefined],
