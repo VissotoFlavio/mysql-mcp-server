@@ -433,6 +433,14 @@ export function assertDropTableSql(sql: string): void {
   if (index !== sql.length) failDdlPolicy();
 }
 
+/** Defense in depth for the canonical named DROP SCHEMA grammar. */
+export function assertDropSchemaSql(sql: string): void {
+  if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();
+  let index = readExpected(sql, 0, 'DROP SCHEMA ');
+  [, index] = readIdentifier(sql, index);
+  if (index !== sql.length) failDdlPolicy();
+}
+
 /** Defense in depth for the canonical named TRUNCATE TABLE grammar. */
 export function assertTruncateTableSql(sql: string): void {
   if (typeof sql !== 'string' || sql.length > MAX_CREATE_TABLE_SQL_LENGTH) failDdlPolicy();

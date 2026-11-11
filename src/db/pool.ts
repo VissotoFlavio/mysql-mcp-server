@@ -1,7 +1,7 @@
 import type { ExecuteValues } from 'mysql2';
 import mysql, { type Pool, type PoolConnection, type PoolOptions, type QueryResult, type QueryValues } from 'mysql2/promise';
 
-import { loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
+import { isProtectedDropSchema, loadConnectionConfig, type ConnectionConfig, type Environment, type ReadFile } from '../config.js';
 import { normalizeAlterTableAddColumnInput, type AlterTableAddColumnInput } from '../tools/alter-table-add-column-input.js';
 import { normalizeAlterTableAddForeignKeyInput, type AlterTableAddForeignKeyInput } from '../tools/alter-table-add-foreign-key-input.js';
 import { normalizeAlterTableDropColumnInput, type AlterTableDropColumnInput } from '../tools/alter-table-drop-column-input.js';
@@ -15,6 +15,7 @@ import { normalizeCreateUniqueIndexInput, type CreateUniqueIndexInput } from '..
 import { normalizeCreateViewInput, type CreateViewInput } from '../tools/create-view-input.js';
 import { MAX_DML_ROWS } from '../tools/dml-input.js';
 import { normalizeDropIndexInput, type DropIndexInput } from '../tools/drop-index-input.js';
+import { normalizeDropSchemaInput, type DropSchemaInput } from '../tools/drop-schema-input.js';
 import { normalizeDropTableInput, type DropTableInput } from '../tools/drop-table-input.js';
 import { normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
@@ -33,6 +34,7 @@ import {
   buildCreateUniqueIndexStatement,
   buildDropIndexStatement,
   buildDropTableStatement,
+  buildDropSchemaStatement,
   buildDropViewStatement,
   buildAlterTableDropForeignKeyStatement,
   buildAlterTableDropColumnStatement,
@@ -51,6 +53,7 @@ import {
   type UpdateDmlBuilderInput,
 } from './dml-builder.js';
 import { sanitizeDmlDriverCode } from './dml-error-codes.js';
+import { consumeDropSchemaMetadataAttestation, validateDropSchemaMetadata, verifyDropSchemaMetadata } from './metadata.js';
 import {
   assertAlterTableAddColumnSql,
   assertAlterTableAddForeignKeySql,
@@ -61,6 +64,7 @@ import {
   assertCreateUniqueIndexSql,
   assertDropIndexSql,
   assertDropTableSql,
+  assertDropSchemaSql,
   assertDropViewSql,
   assertAlterTableDropForeignKeySql,
   assertAlterTableDropColumnSql,
@@ -109,6 +113,16 @@ export class DdlDisabledError extends ConnectionError {
   constructor() {
     super('DDL execution is disabled.');
     this.name = 'DdlDisabledError';
+  }
+}
+
+/** @internal Enforces the DROP SCHEMA policy before a driver connection or statement can be reached. */
+export class DropSchemaPolicyError extends ConnectionError {
+  readonly code = 'MYSQL_DDL_SCHEMA_NOT_ALLOWED';
+
+  constructor(message = 'The DROP SCHEMA request is not approved by policy.') {
+    super(message);
+    this.name = 'DropSchemaPolicyError';
   }
 }
 
@@ -365,6 +379,7 @@ declare const createIndexStatementBrand: unique symbol;
 declare const createUniqueIndexStatementBrand: unique symbol;
 declare const dropIndexStatementBrand: unique symbol;
 declare const dropTableStatementBrand: unique symbol;
+declare const dropSchemaStatementBrand: unique symbol;
 declare const truncateTableStatementBrand: unique symbol;
 declare const dropViewStatementBrand: unique symbol;
 declare const alterTableDropForeignKeyStatementBrand: unique symbol;
@@ -400,6 +415,9 @@ export interface DropIndexStatement {
 export interface DropTableStatement {
   readonly [dropTableStatementBrand]: true;
 }
+export interface DropSchemaStatement {
+  readonly [dropSchemaStatementBrand]: true;
+}
 export interface TruncateTableStatement {
   readonly [truncateTableStatementBrand]: true;
 }
@@ -433,6 +451,8 @@ export interface DmlConnectionLayer {
   executeDmlWithOperationId<T extends QueryResult>(statement: DmlStatement): Promise<[T, import('mysql2').FieldPacket[], string]>;
 }
 
+export type DdlPreflight = (connection: ConnectionLayer) => Promise<void>;
+
 export interface DdlConnectionLayer {
   executeCreateSchema(statement: CreateSchemaStatement): Promise<CreateTableExecutionResult>;
   executeCreateSchemaWithOperationId(statement: CreateSchemaStatement): Promise<readonly [CreateTableExecutionResult, string]>;
@@ -455,6 +475,8 @@ export interface DdlConnectionLayer {
     verify?: () => Promise<void>,
     preflight?: (connection: ConnectionLayer) => Promise<void>,
   ): Promise<readonly [CreateTableExecutionResult, string]>;
+  executeDropSchema(statement: DropSchemaStatement): Promise<CreateTableExecutionResult>;
+  executeDropSchemaWithOperationId(statement: DropSchemaStatement): Promise<readonly [CreateTableExecutionResult, string]>;
   executeTruncateTable(statement: TruncateTableStatement): Promise<CreateTableExecutionResult>;
   executeTruncateTableWithOperationId(
     statement: TruncateTableStatement,
@@ -488,6 +510,7 @@ export interface DdlConnectionLayer {
 }
 
 export interface ConnectionLayer {
+  readonly metadataAttestationScope?: object;
   readonly queryTimeoutMs: number;
   queryOptions(): Readonly<{ timeout: number }>;
   query<T extends QueryResult>(
@@ -498,12 +521,12 @@ export interface ConnectionLayer {
   close(): Promise<void>;
 }
 
-type DdlPreflight = (connection: ConnectionLayer) => Promise<void>;
-
 export interface ConnectionLayerBundle extends ConnectionLayer {
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
   readonly createSchemaEnabled: boolean;
+  readonly dropSchemaEnabled: boolean;
+  readonly dropSchemaAllowlist: readonly string[];
   readonly dropViewMetadataComplete: boolean;
   readonly dropColumnEnabled: boolean;
   readonly dropColumnMetadataComplete: boolean;
@@ -530,6 +553,7 @@ type DdlStatement =
   | CreateUniqueIndexStatement
   | DropIndexStatement
   | DropTableStatement
+  | DropSchemaStatement
   | TruncateTableStatement
   | DropViewStatement
   | AlterTableDropForeignKeyStatement
@@ -547,6 +571,7 @@ type DdlStatementData =
   | Readonly<{ operation: 'create_unique_index'; sql: string; input: CreateUniqueIndexInput }>
   | Readonly<{ operation: 'drop_index'; sql: string; input: DropIndexInput }>
   | Readonly<{ operation: 'drop_table'; sql: string; input: DropTableInput }>
+  | Readonly<{ operation: 'drop_schema'; sql: string; input: DropSchemaInput }>
   | Readonly<{ operation: 'truncate_table'; sql: string; input: TruncateTableInput }>
   | Readonly<{ operation: 'drop_view'; sql: string; input: DropViewInput }>
   | Readonly<{ operation: 'alter_table_drop_foreign_key'; sql: string; input: AlterTableDropForeignKeyInput }>
@@ -660,6 +685,23 @@ export function createDropTableStatement(input: DropTableInput): DropTableStatem
   }
   const statement = Object.freeze({}) as DropTableStatement;
   ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_table', sql, input: normalized }));
+  return statement;
+}
+
+/** Creates the capability-bound form of the supported named DROP SCHEMA statement. */
+export function createDropSchemaStatement(input: DropSchemaInput): DropSchemaStatement {
+  let sql: string;
+  let normalized: DropSchemaInput;
+  try {
+    normalized = normalizeDropSchemaInput(input);
+    if (normalized.confirmation === undefined) throw new DdlPolicyError();
+    sql = buildDropSchemaStatement(normalized).sql;
+  } catch (error) {
+    if (safeInstanceOf(error, DdlPolicyError)) throw error;
+    throw new DdlPolicyError();
+  }
+  const statement = Object.freeze({}) as DropSchemaStatement;
+  ddlStatementRegistry.set(statement, Object.freeze({ operation: 'drop_schema', sql, input: normalized }));
   return statement;
 }
 
@@ -977,7 +1019,18 @@ export function createConnectionLayer({
 }> = {}): ConnectionLayerBundle {
   const config = loadConnectionConfig(environment, { readFile });
   const pool = createPool(config, driver);
+  const metadataAttestationScope = Object.freeze({});
   const queryOptions = Object.freeze({ timeout: config.queryTimeoutMs });
+  const metadataConnection = (exclusive: PoolConnection | undefined): ConnectionLayer => ({
+    metadataAttestationScope,
+    query: (options, values) => (exclusive === undefined ? pool.query(options, values) : exclusive.query(options, values)),
+    queryOptions: () => queryOptions,
+    queryTimeoutMs: config.queryTimeoutMs,
+    verifyConnection: async () => {
+      if (exclusive !== undefined) await exclusive.ping();
+    },
+    close: async () => {},
+  });
 
   const executeDmlInternal = async <T extends QueryResult>(statement: DmlStatement): Promise<[T, import('mysql2').FieldPacket[], string]> => {
     if (!config.dmlEnabled) {
@@ -1095,9 +1148,20 @@ export function createConnectionLayer({
       if (expected === 'alter_table_drop_column' && !config.dropColumnMetadataComplete) throw new DdlDisabledError();
       if (expected === 'drop_table' && !config.dropTableEnabled) throw new DdlDisabledError();
       if (expected === 'drop_table' && !config.dropTableMetadataComplete) throw new DdlDisabledError();
+      if (expected === 'drop_schema' && !config.dropSchemaEnabled) throw new DdlDisabledError();
       if (expected === 'truncate_table' && !config.truncateTableEnabled) throw new DdlDisabledError();
       if (expected === 'truncate_table' && !config.truncateTableMetadataComplete) throw new DdlDisabledError();
       if (statementData === undefined || statementData.operation !== expected) throw new DdlPolicyError();
+      if (expected === 'drop_schema') {
+        const schema = (statementData as Extract<DdlStatementData, { operation: 'drop_schema' }>).input.schema;
+        const normalizedSchema = schema.toLowerCase();
+        if (
+          !config.dropSchemaAllowlist.includes(schema) ||
+          normalizedSchema === config.database.toLowerCase() ||
+          isProtectedDropSchema(normalizedSchema)
+        )
+          throw new DropSchemaPolicyError();
+      }
       if (statementData.operation === 'create_schema') assertCreateSchemaSql(statementData.sql);
       else if (statementData.operation === 'create_table') assertCreateTableSql(statementData.sql);
       else if (statementData.operation === 'create_view') assertCreateViewSql(statementData.sql);
@@ -1105,6 +1169,7 @@ export function createConnectionLayer({
       else if (statementData.operation === 'create_unique_index') assertCreateUniqueIndexSql(statementData.sql);
       else if (statementData.operation === 'drop_index') assertDropIndexSql(statementData.sql);
       else if (statementData.operation === 'drop_table') assertDropTableSql(statementData.sql);
+      else if (statementData.operation === 'drop_schema') assertDropSchemaSql(statementData.sql);
       else if (statementData.operation === 'truncate_table') assertTruncateTableSql(statementData.sql);
       else if (statementData.operation === 'drop_view') assertDropViewSql(statementData.sql);
       else if (statementData.operation === 'alter_table_drop_foreign_key') assertAlterTableDropForeignKeySql(statementData.sql);
@@ -1114,32 +1179,34 @@ export function createConnectionLayer({
       else if (statementData.operation === 'alter_table_modify_column') assertAlterTableModifyColumnSql(statementData.sql);
       else if (statementData.operation === 'alter_table_rename_column') assertAlterTableRenameColumnSql(statementData.sql);
       else assertRenameTableSql(statementData.sql);
-      if ((expected === 'drop_table' || expected === 'truncate_table') && preflight !== undefined) {
+      const requiresMetadataConnection =
+        expected === 'drop_schema' || ((expected === 'drop_table' || expected === 'truncate_table') && preflight !== undefined);
+      let metadataLayer: ConnectionLayer | undefined;
+      if (requiresMetadataConnection) {
         const candidatePool = pool as Pool & { getConnection?: () => Promise<PoolConnection> };
         if (typeof candidatePool.getConnection === 'function') {
           exclusiveConnection = await candidatePool.getConnection();
-          await preflight({
-            query: (options, values) => exclusiveConnection!.query(options, values),
-            queryOptions: () => queryOptions,
-            queryTimeoutMs: config.queryTimeoutMs,
-            verifyConnection: async () => exclusiveConnection!.ping(),
-            close: async () => {},
-          });
+          metadataLayer = metadataConnection(exclusiveConnection);
         } else {
-          await preflight({
-            query: (options, values) => pool.query(options, values),
-            queryOptions: () => queryOptions,
-            queryTimeoutMs: config.queryTimeoutMs,
-            verifyConnection: async () => {},
-            close: async () => {},
-          });
+          metadataLayer = metadataConnection(undefined);
+        }
+        if (expected === 'drop_schema') {
+          const dropSchemaInput = (statementData as Extract<DdlStatementData, { operation: 'drop_schema' }>).input;
+          const validated = await validateDropSchemaMetadata(metadataLayer, dropSchemaInput);
+          consumeDropSchemaMetadataAttestation(metadataLayer, dropSchemaInput.schema, validated.metadataRevision);
+        } else if (preflight !== undefined) {
+          await preflight(metadataLayer);
         }
       }
       audit.markSubmitted();
       submitted = true;
       const [result] = await (exclusiveConnection ?? pool).execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
-      const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' ? 1 : 0);
-      if (verify !== undefined) {
+      const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' || expected === 'drop_schema' ? 1 : 0);
+      if (expected === 'drop_schema') {
+        const dropSchemaInput = (statementData as Extract<DdlStatementData, { operation: 'drop_schema' }>).input;
+        if (metadataLayer === undefined) throw new DropSchemaPolicyError('DROP SCHEMA metadata verification is unavailable.');
+        await verifyDropSchemaMetadata(metadataLayer, dropSchemaInput.schema);
+      } else if (verify !== undefined) {
         await verify();
       }
       audit.emit();
@@ -1152,8 +1219,11 @@ export function createConnectionLayer({
         safeInstanceOf(error, DdlResultError) ||
         safeInstanceOf(error, DdlPolicyError) ||
         safeInstanceOf(error, DdlDisabledError) ||
+        safeInstanceOf(error, DropSchemaPolicyError) ||
         safeInstanceOf(error, DdlDriverError) ||
         (error instanceof Error && error.name === 'DropTableMetadataError') ||
+        (error instanceof Error && error.name === 'DropSchemaMetadataError') ||
+        (error instanceof Error && error.name === 'DropSchemaVerificationError') ||
         (error instanceof Error && error.name === 'TruncateTableMetadataError')
       )
         safeError = error;
@@ -1205,6 +1275,11 @@ export function createConnectionLayer({
     },
     executeDropTableWithOperationId: (statement: DropTableStatement, verify?: () => Promise<void>, preflight?: DdlPreflight) =>
       executeDdlWithOperationId(statement, 'drop_table', verify, preflight),
+    async executeDropSchema(statement: DropSchemaStatement): Promise<CreateTableExecutionResult> {
+      const [result] = await executeDdlWithOperationId(statement, 'drop_schema');
+      return result;
+    },
+    executeDropSchemaWithOperationId: (statement: DropSchemaStatement) => executeDdlWithOperationId(statement, 'drop_schema'),
     async executeTruncateTable(statement: TruncateTableStatement): Promise<CreateTableExecutionResult> {
       const [result] = await executeDdlWithOperationId(statement, 'truncate_table');
       return result;
@@ -1261,9 +1336,12 @@ export function createConnectionLayer({
   });
 
   return Object.freeze({
+    metadataAttestationScope,
     dmlEnabled: config.dmlEnabled,
     ddlEnabled: config.ddlEnabled,
     createSchemaEnabled: config.createSchemaEnabled,
+    dropSchemaEnabled: config.dropSchemaEnabled,
+    dropSchemaAllowlist: config.dropSchemaAllowlist,
     dropViewMetadataComplete: config.dropViewMetadataComplete,
     dropColumnEnabled: config.dropColumnEnabled,
     dropColumnMetadataComplete: config.dropColumnMetadataComplete,

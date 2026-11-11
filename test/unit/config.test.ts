@@ -17,6 +17,8 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.dmlEnabled, false);
   assert.equal(config.ddlEnabled, false);
   assert.equal(config.createSchemaEnabled, false);
+  assert.equal(config.dropSchemaEnabled, false);
+  assert.deepEqual(config.dropSchemaAllowlist, []);
   assert.equal(config.dropViewMetadataComplete, false);
   assert.equal(config.dropColumnEnabled, false);
   assert.equal(config.dropColumnMetadataComplete, false);
@@ -54,6 +56,57 @@ test('loads the strict CREATE SCHEMA opt-in only for explicit boolean values', (
     () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_CREATE_SCHEMA_ENABLED: 'TRUE' })),
     /MYSQL_DDL_CREATE_SCHEMA_ENABLED must be true or false/,
   );
+});
+
+test('loads the DROP SCHEMA opt-in and exact allowlist without permitting MYSQL_DATABASE', () => {
+  assert.equal(
+    loadConnectionConfig(
+      validEnvironment({
+        MYSQL_DDL_ENABLED: 'true',
+        MYSQL_DDL_DROP_SCHEMA_ENABLED: 'true',
+        MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: 'isolated_a,isolated_b',
+      }),
+    ).dropSchemaEnabled,
+    true,
+  );
+  assert.deepEqual(
+    loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: 'isolated_a,isolated_b' }))
+      .dropSchemaAllowlist,
+    ['isolated_a', 'isolated_b'],
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_SCHEMA_ENABLED: 'TRUE' })),
+    /MYSQL_DDL_DROP_SCHEMA_ENABLED must be true or false/,
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: 'isolated_a, isolated_b' })),
+    /MYSQL_DDL_DROP_SCHEMA_ALLOWLIST must be a comma-separated list/,
+  );
+  const environment = validEnvironment();
+  assert.throws(
+    () => loadConnectionConfig({ ...environment, MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: environment.MYSQL_DATABASE }),
+    /must not contain MYSQL_DATABASE/,
+  );
+  for (const invalid of [
+    'Isolated',
+    'isolated',
+    'information_schema',
+    'MYSQL',
+    'performance_schema',
+    'sys',
+    'isolated`name',
+    'isolated"name',
+    `isolated\u200Bname`,
+  ]) {
+    assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: `isolated,${invalid}` })), /DROP_SCHEMA_ALLOWLIST/);
+  }
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DATABASE: 'App', MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: 'app' })),
+    /must not contain MYSQL_DATABASE/,
+  );
+  for (const systemSchema of ['INFORMATION_SCHEMA', 'mysql', 'NDBINFO', 'Performance_Schema', 'SYS']) {
+    assert.throws(() => loadConnectionConfig(validEnvironment({ MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: systemSchema })), /protected system schema/);
+  }
 });
 
 test('loads the DROP VIEW metadata completeness attestation only for explicit boolean values', () => {
