@@ -26,6 +26,7 @@ import { registerDeleteRowsTool } from './tools/delete-rows.js';
 import { registerDescribeTableTool } from './tools/describe-table.js';
 import { registerDiscoveryTools } from './tools/discovery.js';
 import { registerDropIndexTool } from './tools/drop-index.js';
+import { registerDropSchemaTool } from './tools/drop-schema.js';
 import { registerDropTableTool } from './tools/drop-table.js';
 import { registerDropViewTool } from './tools/drop-view.js';
 import { registerExplainQueryTool } from './tools/explain.js';
@@ -79,6 +80,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerDropIndexTool(server, mysql);
     if (mysql.dropViewMetadataComplete) registerDropViewTool(server, mysql);
     if (mysql.dropTableEnabled && mysql.dropTableMetadataComplete) registerDropTableTool(server, mysql);
+    if (mysql.dropSchemaEnabled && mysql.dropSchemaAllowlist.length > 0) registerDropSchemaTool(server, mysql);
     if (mysql.truncateTableEnabled && mysql.truncateTableMetadataComplete) registerTruncateTableTool(server, mysql);
     registerAlterTableAddColumnTool(server, mysql);
     registerAlterTableAddForeignKeyTool(server, mysql);

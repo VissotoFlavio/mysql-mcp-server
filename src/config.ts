@@ -9,6 +9,14 @@ export const DEFAULTS = Object.freeze({
   idleTimeoutMs: 60_000,
 });
 
+const DROP_SCHEMA_CONTROL_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+export const DROP_SCHEMA_PROTECTED_SYSTEM_SCHEMAS = Object.freeze(['information_schema', 'mysql', 'ndbinfo', 'performance_schema', 'sys'] as const);
+
+export function isProtectedDropSchema(schema: string): boolean {
+  const normalized = schema.toLowerCase();
+  return DROP_SCHEMA_PROTECTED_SYSTEM_SCHEMAS.some((protectedSchema) => protectedSchema === normalized);
+}
+
 export type Environment = Readonly<Record<string, string | undefined>>;
 export type ReadFile = (path: string, encoding: BufferEncoding) => string;
 
@@ -28,6 +36,8 @@ export interface ConnectionConfig {
   readonly dmlEnabled: boolean;
   readonly ddlEnabled: boolean;
   readonly createSchemaEnabled: boolean;
+  readonly dropSchemaEnabled: boolean;
+  readonly dropSchemaAllowlist: readonly string[];
   readonly dropViewMetadataComplete: boolean;
   readonly dropColumnEnabled: boolean;
   readonly dropColumnMetadataComplete: boolean;
@@ -149,6 +159,28 @@ function validateIdentifier(value: string, name: string): string {
   return value;
 }
 
+function identifierAllowlist(environment: Environment, name: string): readonly string[] {
+  const raw = environment[name];
+  if (raw === undefined) return Object.freeze([]);
+  if (typeof raw !== 'string' || raw.length === 0) throw configurationError(`${name} must be a comma-separated list of schema identifiers.`);
+  const values = raw.split(',');
+  if (values.some((value) => value.length === 0 || value.trim() !== value))
+    throw configurationError(`${name} must be a comma-separated list of schema identifiers.`);
+  const unique = new Set<string>();
+  const normalized = new Set<string>();
+  for (const value of values) {
+    if (Array.from(value).length > 64 || DROP_SCHEMA_CONTROL_CHARACTER_PATTERN.test(value) || value.includes('`') || value.includes('"')) {
+      throw configurationError(`${name} contains unsupported schema identifier characters.`);
+    }
+    const normalizedValue = value.toLowerCase();
+    if (normalized.has(normalizedValue)) throw configurationError(`${name} must not contain duplicate schema identifiers.`);
+    if (isProtectedDropSchema(normalizedValue)) throw configurationError(`${name} must not contain a protected system schema.`);
+    normalized.add(normalizedValue);
+    unique.add(value);
+  }
+  return Object.freeze([...unique]);
+}
+
 function readTlsFile(readFile: ReadFile, environmentName: string, path: string): string {
   try {
     return readFile(path, 'utf8');
@@ -214,6 +246,7 @@ export function loadConnectionConfig(
 
   const ddlEnabled = strictBooleanValue(environment, 'MYSQL_DDL_ENABLED', false);
   const createSchemaOptIn = strictBooleanValue(environment, 'MYSQL_DDL_CREATE_SCHEMA_ENABLED', false);
+  const dropSchemaOptIn = strictBooleanValue(environment, 'MYSQL_DDL_DROP_SCHEMA_ENABLED', false);
   const dropColumnOptIn = strictBooleanValue(environment, 'MYSQL_DDL_DROP_COLUMN_ENABLED', false);
   const dropColumnMetadataComplete = strictBooleanValue(environment, 'MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE', false);
   const dropTableOptIn = strictBooleanValue(environment, 'MYSQL_DDL_DROP_TABLE_ENABLED', false);
@@ -221,15 +254,23 @@ export function loadConnectionConfig(
   const truncateTableOptIn = strictBooleanValue(environment, 'MYSQL_DDL_TRUNCATE_TABLE_ENABLED', false);
   const truncateTableMetadataComplete = strictBooleanValue(environment, 'MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE', false);
 
+  const database = validateIdentifier(requiredValue(environment, 'MYSQL_DATABASE'), 'MYSQL_DATABASE');
+  const dropSchemaAllowlist = identifierAllowlist(environment, 'MYSQL_DDL_DROP_SCHEMA_ALLOWLIST');
+  if (dropSchemaAllowlist.some((schema) => schema.toLowerCase() === database.toLowerCase())) {
+    throw configurationError('MYSQL_DDL_DROP_SCHEMA_ALLOWLIST must not contain MYSQL_DATABASE.');
+  }
+
   return Object.freeze({
     host: validateHost(requiredValue(environment, 'MYSQL_HOST')),
     port: integerValue(environment, 'MYSQL_PORT', DEFAULTS.port, { min: 1, max: 65_535 }),
-    database: validateIdentifier(requiredValue(environment, 'MYSQL_DATABASE'), 'MYSQL_DATABASE'),
+    database,
     user: validateIdentifier(requiredValue(environment, 'MYSQL_USER'), 'MYSQL_USER'),
     password: requiredValue(environment, 'MYSQL_PASSWORD', true),
     dmlEnabled: booleanValue(environment, 'MYSQL_DML_ENABLED', false),
     ddlEnabled,
     createSchemaEnabled: ddlEnabled && createSchemaOptIn,
+    dropSchemaEnabled: ddlEnabled && dropSchemaOptIn,
+    dropSchemaAllowlist,
     dropViewMetadataComplete: strictBooleanValue(environment, 'MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE', false),
     dropColumnEnabled: ddlEnabled && dropColumnOptIn,
     dropColumnMetadataComplete: ddlEnabled && dropColumnOptIn && dropColumnMetadataComplete,

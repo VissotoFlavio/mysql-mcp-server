@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+## 0.19.0 - 2026-11-11
+
+- [#82 — ddl: expose controlled `drop_schema` MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/82): strict destructive opt-in, exact schema allowlist excluding `MYSQL_DATABASE` and protected system schemas, fail-closed InnoDB base-table eligibility anchored by durable `TABLE_ID`, single-use scoped confirmation, sanitized audit/outcomes, post-execution verification, least-privilege metadata guidance, backup/recovery and controlled-maintenance-window guidance, and a separately guarded disposable-schema integration owner.
+
 ## 0.18.0 - 2026-11-09
 
 - [#80 — ddl: expose controlled `truncate_table` MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/80): separate destructive opt-in, target-bound metadata confirmation, foreign-key fail-closed preflight, sanitized audit/outcomes, stable TRUNCATE effects, and no automatic retry.
