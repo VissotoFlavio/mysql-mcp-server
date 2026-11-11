@@ -1201,7 +1201,7 @@ export function createConnectionLayer({
       audit.markSubmitted();
       submitted = true;
       const [result] = await (exclusiveConnection ?? pool).execute({ sql: statementData.sql, timeout: config.queryTimeoutMs });
-      const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' ? 1 : 0);
+      const normalizedResult = normalizeCreateTableResult(result, expected === 'create_schema' || expected === 'drop_schema' ? 1 : 0);
       if (expected === 'drop_schema') {
         const dropSchemaInput = (statementData as Extract<DdlStatementData, { operation: 'drop_schema' }>).input;
         if (metadataLayer === undefined) throw new DropSchemaPolicyError('DROP SCHEMA metadata verification is unavailable.');

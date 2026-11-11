@@ -107,6 +107,8 @@ test('runs the guarded drop_schema lifecycle only for one disposable allowlisted
       arguments: { schema: targetSchema, reason: 'Remove the disposable schema after lifecycle validation.', confirmation: preview.confirmation },
     });
     assert.equal((dropped.result?.structuredContent as { operation: string }).operation, 'drop_schema');
+    await application.close();
+    application = undefined;
     const verification = await mysql.createConnection({
       host: config.host,
       port: config.port,
@@ -134,7 +136,7 @@ test('runs the guarded drop_schema lifecycle only for one disposable allowlisted
         ssl: config.tls ? { ...config.tls } : undefined,
       });
       try {
-        await cleanup.query(`DROP SCHEMA \`${targetSchema.replaceAll('`', '``')}\``);
+        await cleanup.query(`DROP SCHEMA IF EXISTS \`${targetSchema.replaceAll('`', '``')}\``);
       } finally {
         await cleanup.end();
       }

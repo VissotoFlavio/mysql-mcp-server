@@ -69,7 +69,7 @@ test('drop_schema performs sanitized preflight, canonical execution, verificatio
           async execute(options: { sql: string }) {
             executeCalls += 1;
             assert.equal(options.sql, 'DROP SCHEMA `isolated`');
-            return [{ affectedRows: 0, warningStatus: 0 }, []];
+            return [{ affectedRows: 1, warningStatus: 0 }, []];
           },
           async ping() {},
           release() {},
@@ -209,7 +209,7 @@ test('schema confirmations stay scoped to one connection layer before execution'
       async execute() {
         executeCalls += 1;
         dropped = true;
-        return [{ affectedRows: 0, warningStatus: 0 }, []];
+        return [{ affectedRows: 1, warningStatus: 0 }, []];
       },
       async end() {},
     } as never;
