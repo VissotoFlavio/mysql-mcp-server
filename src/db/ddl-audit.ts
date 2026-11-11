@@ -39,6 +39,12 @@ import { DropIndexInputValidationError, normalizeDropIndexInput, type DropIndexI
 import { DropTableInputValidationError, dropTableMetadataRevision, normalizeDropTableInput, type DropTableInput } from '../tools/drop-table-input.js';
 import { DropViewInputValidationError, normalizeDropViewInput, type DropViewInput } from '../tools/drop-view-input.js';
 import { RenameTableInputValidationError, normalizeRenameTableInput, type RenameTableInput } from '../tools/rename-table-input.js';
+import {
+  TruncateTableInputValidationError,
+  normalizeTruncateTableInput,
+  truncateTableMetadataRevision,
+  type TruncateTableInput,
+} from '../tools/truncate-table-input.js';
 
 import { classifyDdlDriverCode } from './ddl-error-codes.js';
 import {
@@ -56,6 +62,8 @@ import {
   DropViewVerificationError,
   DropTableMetadataError,
   DropTableVerificationError,
+  TruncateTableMetadataError,
+  TruncateTableVerificationError,
 } from './metadata.js';
 import { ConnectionError, DdlDisabledError, DdlDriverError, DdlResultError, QueryTimeoutError } from './pool.js';
 import { DdlPolicyError } from './sql-policy.js';
@@ -69,6 +77,7 @@ export type DdlAuditOperation =
   | 'create_unique_index'
   | 'drop_index'
   | 'drop_table'
+  | 'truncate_table'
   | 'drop_view'
   | 'alter_table_drop_foreign_key'
   | 'alter_table_drop_column'
@@ -152,6 +161,7 @@ type NormalizedRequest = Readonly<{
     | CreateUniqueIndexInput
     | DropIndexInput
     | DropTableInput
+    | TruncateTableInput
     | DropViewInput
     | AlterTableDropForeignKeyInput
     | AlterTableDropColumnInput
@@ -281,8 +291,20 @@ function normalizeRequest(request: unknown, expectedOperation?: DdlAuditOperatio
       return INVALID_REQUEST;
     }
   }
+  if (expectedOperation === 'truncate_table') {
+    try {
+      return Object.freeze({ operation: 'truncate_table', input: normalizeTruncateTableInput(request) });
+    } catch {
+      return INVALID_REQUEST;
+    }
+  }
   try {
     return Object.freeze({ operation: 'drop_table', input: normalizeDropTableInput(request) });
+  } catch {
+    /* try the other supported DDL contract */
+  }
+  try {
+    return Object.freeze({ operation: 'truncate_table', input: normalizeTruncateTableInput(request) });
   } catch {
     /* try the other supported DDL contract */
   }
@@ -407,21 +429,23 @@ function canonicalRequest(request: NormalizedRequest): object {
                       ? {}
                       : request.operation === 'drop_table'
                         ? { metadataRevision: dropTableMetadataRevision((input as DropTableInput).confirmation) }
-                        : {
-                            columns:
-                              request.operation === 'create_view'
-                                ? (input as CreateViewInput).definition.columns
-                                : inputWithColumns.columns.map((column) =>
-                                    typeof column === 'string'
-                                      ? column
-                                      : {
-                                          name: column.name,
-                                          type: column.type,
-                                          nullable: column.nullable,
-                                          autoIncrement: column.autoIncrement === true,
-                                        },
-                                  ),
-                          }),
+                        : request.operation === 'truncate_table'
+                          ? { metadataRevision: truncateTableMetadataRevision((input as TruncateTableInput).confirmation) }
+                          : {
+                              columns:
+                                request.operation === 'create_view'
+                                  ? (input as CreateViewInput).definition.columns
+                                  : inputWithColumns.columns.map((column) =>
+                                      typeof column === 'string'
+                                        ? column
+                                        : {
+                                            name: column.name,
+                                            type: column.type,
+                                            nullable: column.nullable,
+                                            autoIncrement: column.autoIncrement === true,
+                                          },
+                                    ),
+                            }),
     ...(request.operation === 'create_table' ? { primaryKey: (input as CreateTableInput).primaryKey } : {}),
   };
 }
@@ -441,6 +465,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
       safeInstanceOf(error, CreateIndexInputValidationError) ||
       safeInstanceOf(error, DropIndexInputValidationError) ||
       safeInstanceOf(error, DropTableInputValidationError) ||
+      safeInstanceOf(error, TruncateTableInputValidationError) ||
       safeInstanceOf(error, DropViewInputValidationError) ||
       safeInstanceOf(error, AlterTableAddColumnInputValidationError) ||
       safeInstanceOf(error, AlterTableAddForeignKeyInputValidationError) ||
@@ -462,6 +487,7 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     if (safeInstanceOf(error, DropIndexVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropViewVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropTableVerificationError)) return OUTCOMES.unknown;
+    if (safeInstanceOf(error, TruncateTableVerificationError)) return OUTCOMES.unknown;
     if (safeInstanceOf(error, DropIndexMetadataError)) {
       const code = (error as DropIndexMetadataError).code;
       return code === 'MYSQL_DDL_METADATA_INVALID'
@@ -480,6 +506,14 @@ export function toSafeDdlOutcome(error: unknown, submitted = false): SafeDdlOutc
     }
     if (safeInstanceOf(error, DropTableMetadataError)) {
       const code = (error as DropTableMetadataError).code;
+      return code === 'MYSQL_DDL_METADATA_INVALID'
+        ? OUTCOMES.metadata
+        : code === 'MYSQL_DDL_TABLE_INVALID'
+          ? OUTCOMES.tableInvalid
+          : OUTCOMES.tableStructure;
+    }
+    if (safeInstanceOf(error, TruncateTableMetadataError)) {
+      const code = (error as TruncateTableMetadataError).code;
       return code === 'MYSQL_DDL_METADATA_INVALID'
         ? OUTCOMES.metadata
         : code === 'MYSQL_DDL_TABLE_INVALID'
@@ -617,7 +651,7 @@ function baseEvent(
     reason:
       input === null
         ? '[invalid]'
-        : normalized.operation === 'create_schema' || normalized.operation === 'drop_table'
+        : normalized.operation === 'create_schema' || normalized.operation === 'drop_table' || normalized.operation === 'truncate_table'
           ? createHash('sha256').update(input.reason, 'utf8').digest('hex')
           : input.reason,
     columnCount:
@@ -641,7 +675,7 @@ function baseEvent(
                         ? null
                         : normalized.operation === 'drop_view'
                           ? null
-                          : normalized.operation === 'drop_table'
+                          : normalized.operation === 'drop_table' || normalized.operation === 'truncate_table'
                             ? null
                             : normalized.operation === 'alter_table_drop_foreign_key'
                               ? null

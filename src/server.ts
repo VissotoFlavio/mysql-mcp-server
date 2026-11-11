@@ -32,6 +32,7 @@ import { registerExplainQueryTool } from './tools/explain.js';
 import { registerInsertRowsTool } from './tools/insert-rows.js';
 import { registerReadOnlyQueryTool } from './tools/query.js';
 import { registerRenameTableTool } from './tools/rename-table.js';
+import { registerTruncateTableTool } from './tools/truncate-table.js';
 import { registerUpdateRowsTool } from './tools/update-rows.js';
 
 const packageMetadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -78,6 +79,7 @@ export function createMcpApplication(options: McpApplicationOptions = {}): McpAp
     registerDropIndexTool(server, mysql);
     if (mysql.dropViewMetadataComplete) registerDropViewTool(server, mysql);
     if (mysql.dropTableEnabled && mysql.dropTableMetadataComplete) registerDropTableTool(server, mysql);
+    if (mysql.truncateTableEnabled && mysql.truncateTableMetadataComplete) registerTruncateTableTool(server, mysql);
     registerAlterTableAddColumnTool(server, mysql);
     registerAlterTableAddForeignKeyTool(server, mysql);
     registerAlterTableDropForeignKeyTool(server, mysql);

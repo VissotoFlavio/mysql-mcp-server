@@ -112,6 +112,33 @@ test('loads the separate DROP TABLE opt-in and metadata completeness attestation
   );
 });
 
+test('loads the separate TRUNCATE TABLE opt-in and metadata completeness attestation only with DDL enabled', () => {
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'true' })).truncateTableEnabled, false);
+  assert.equal(
+    loadConnectionConfig(validEnvironment({ MYSQL_DDL_ENABLED: 'true', MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'true' })).truncateTableEnabled,
+    true,
+  );
+  assert.equal(
+    loadConnectionConfig(
+      validEnvironment({
+        MYSQL_DDL_ENABLED: 'true',
+        MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'true',
+        MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE: 'true',
+      }),
+    ).truncateTableMetadataComplete,
+    true,
+  );
+  assert.equal(loadConnectionConfig(validEnvironment({ MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE: 'true' })).truncateTableMetadataComplete, false);
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_TRUNCATE_TABLE_ENABLED: 'TRUE' })),
+    /MYSQL_DDL_TRUNCATE_TABLE_ENABLED must be true or false/,
+  );
+  assert.throws(
+    () => loadConnectionConfig(validEnvironment({ MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE: 'TRUE' })),
+    /MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE must be true or false/,
+  );
+});
+
 test('rejects each required connection setting when missing', () => {
   for (const name of ['MYSQL_HOST', 'MYSQL_DATABASE', 'MYSQL_USER', 'MYSQL_PASSWORD']) {
     const environment = { ...validEnvironment() };
