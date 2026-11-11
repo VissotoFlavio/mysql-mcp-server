@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- [#82 — ddl: expose controlled `drop_schema` MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/82): strict destructive opt-in, exact schema allowlist excluding `MYSQL_DATABASE` and protected system schemas, bounded impact preflight, metadata-fingerprint single-use confirmation with documented creation-identity limits, least-privilege metadata guidance, backup/recovery and controlled-maintenance-window guidance, post-execution verification, sanitized unknown outcomes, and a separately guarded disposable-schema integration owner.
+## 0.19.0 - 2026-11-11
+
+- [#82 — ddl: expose controlled `drop_schema` MCP tool](https://github.com/VissotoFlavio/mysql-mcp-server/issues/82): strict destructive opt-in, exact schema allowlist excluding `MYSQL_DATABASE` and protected system schemas, fail-closed InnoDB base-table eligibility anchored by durable `TABLE_ID`, single-use scoped confirmation, sanitized audit/outcomes, post-execution verification, least-privilege metadata guidance, backup/recovery and controlled-maintenance-window guidance, and a separately guarded disposable-schema integration owner.
 
 ## 0.18.0 - 2026-11-09
 
