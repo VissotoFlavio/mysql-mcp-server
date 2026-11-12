@@ -30,7 +30,7 @@ The server never becomes a general SQL administration channel. DML/DDL are disab
 
 ## Quick start: use an official package
 
-For the complete download-to-first-prompt flow, including Windows PowerShell and Codex, see [Getting started](docs/getting-started.md). The commands below remain the shortest package-based path. The project is `private` and does not claim npm distribution; use a stable asset from the [GitHub Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases) page.
+For the complete download-to-first-prompt flow, including Windows PowerShell and Codex, see [Getting started](docs/getting-started.md). The commands below remain the shortest package-based path. The npm package has `private: true` in `package.json` and is not published to npm; use a stable asset from the [GitHub Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases) page.
 
 This is the shortest path for a user who does not have a repository clone. Download the `.tgz` asset from an official GitHub Release, choose a dedicated local install directory, and install the package with its production dependencies. Candidate packages from prereleases are for controlled validation only.
 
@@ -350,6 +350,14 @@ Integration tests are opt-in and are not part of the normal local validation. Th
 ```bash
 npm run test:integration
 ```
+
+To validate the recommended package-based onboarding path without a database or credentials, run the opt-in artifact smoke test:
+
+```bash
+npm run test:package-smoke
+```
+
+It creates a final `.tgz`, installs it into a temporary directory, copies `.env.example` from the installed package with synthetic required values, launches the installed `dist/server.js` over stdio, and verifies the MCP handshake plus the five default read-only tools. It is intentionally separate from `npm test` and `npm run test:integration` because it installs production dependencies in a temporary directory.
 
 For PowerShell, set the opt-in flag for the current session with `$env:MYSQL_INTEGRATION_TEST = 'true'`. For the temporary-table DDL test, also set `MYSQL_DDL_INTEGRATION_TEST=true`, `MYSQL_DML_ENABLED=true`, `MYSQL_DDL_ENABLED=true`, `MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE=true`, `MYSQL_DDL_DROP_COLUMN_ENABLED=true`, `MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE=true`, `MYSQL_DDL_DROP_TABLE_ENABLED=true`, `MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE=true`, `MYSQL_DDL_INTEGRATION_CONFIRM=isolated-database-schema`, and a dedicated `MYSQL_DDL_INTEGRATION_TABLE` beginning with `mcp_ddl_test_`. To enable the focused `test/integration/drop-table.integration.test.ts` contract in the same command, also set a separate `MYSQL_DDL_DROP_TABLE_INTEGRATION_TABLE` beginning with `mcp_ddl_test_`; otherwise that focused test is skipped. This authorization covers temporary tables/views/indexes, one explicitly confirmed disposable column, and one explicitly confirmed disposable table only; it must not activate the separate schema create/drop test. In POSIX shells, provide the same variables as command prefixes.
 

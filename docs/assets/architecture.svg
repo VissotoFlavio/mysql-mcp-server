@@ -19,8 +19,8 @@
   <text class="small" x="145" y="175" text-anchor="middle">natural-language prompt</text>
   <rect class="accent" x="335" y="75" width="250" height="170" />
   <text x="460" y="120" text-anchor="middle">AI client</text>
-  <text class="small" x="460" y="155" text-anchor="middle">MCP stdio process</text>
-  <text class="small" x="460" y="185" text-anchor="middle">local launch + reload</text>
+  <text class="small" x="460" y="155" text-anchor="middle">launches local child</text>
+  <text class="small" x="460" y="185" text-anchor="middle">MCP stdio transport</text>
   <rect class="safe" x="665" y="55" width="270" height="210" />
   <text x="800" y="105" text-anchor="middle">MySQL MCP Server</text>
   <text class="small" x="800" y="140" text-anchor="middle">bounded tools</text>

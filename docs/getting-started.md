@@ -72,15 +72,17 @@ Restart or reload the MCP client after adding or changing the server entry. Do n
 
 With the default `MYSQL_DML_ENABLED=false` and `MYSQL_DDL_ENABLED=false`, use these prompts in order:
 
-1. “List the MySQL schemas this account can access.”
-2. “List the tables available in the returned schema.”
-3. “Describe the columns and primary key of `demo_catalog.sample_records`.”
-4. “Show five latest records ordered by `created_at` and the primary key, using a bounded read-only query.”
+1. “List the MySQL schemas and tables available to this account.”
+2. “Choose one accessible table from that result and describe its columns and keys. Do not assume a schema or table name.”
+3. “Based on the discovered metadata, propose a policy-approved SELECT using columns that actually exist, with a literal `LIMIT 5` and bound parameters.”
+4. “Execute the approved bounded read-only query; if no accessible table or suitable columns were found, stop at metadata discovery.”
 5. “Explain the execution plan for that same bounded SELECT; do not execute DML.”
 
 The expected read-only tools are `list_accessible_schemas`, `list_accessible_tables`, `describe_table`, `execute_read_only_query`, and `explain_read_only_query`. A successful first use means the client displays the tools, discovery returns only objects visible to the account, and the description/query returns data from the isolated target. Server process startup alone does not prove that MySQL connectivity or a query succeeded.
 
-Every read-only query must contain a literal `LIMIT` from 0 through 100 and use bound `parameters`. Do not ask the server to execute arbitrary SQL, remove the limit, export unrestricted data, or bypass the MySQL account's privileges.
+Every read-only query must contain a literal `LIMIT` from 0 through 100 and use bound `parameters`; `LIMIT 5` is the illustrative first-query value above. Do not assume a primary key, timestamp, or “latest” ordering column. If the discovered table has no suitable deterministic ordering columns, use a metadata-only session or ask the operator to choose an appropriate bounded query. A name such as `demo_catalog.sample_records` is only an optional example for a demonstration database created beforehand, not a prerequisite. Do not ask the server to execute arbitrary SQL, remove the limit, export unrestricted data, or bypass the MySQL account's privileges.
+
+Maintainers can validate the recommended path from the generated release artifact without a database or credentials with `npm run test:package-smoke`. The opt-in smoke test packs the project, installs the `.tgz` in a temporary directory, copies the template from the installed package, starts the installed `dist/server.js` over stdio, and verifies the handshake plus the five default read-only tools.
 
 ## If the first prompt fails
 
