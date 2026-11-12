@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.19.1 - 2026-11-11
+
 - [#188 — docs: tornar instalação do pacote e configuração MCP acessíveis](https://github.com/VissotoFlavio/mysql-mcp-server/issues/188): organiza o quick start para instalação sem clone, configuração local não versionada, uso inicial via MCP, capacidades por opt-in e documentação sanitizada incluída no pacote.
 
 ## 0.19.0 - 2026-11-11
