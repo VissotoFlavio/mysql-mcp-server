@@ -173,7 +173,7 @@ $env:MYSQL_DML_INTEGRATION_TABLE = 'pre_provisioned_dml_fixture'
 npm run test:integration
 ```
 
-The published transcript is reproduced by [`test/unit/sanitized-workflow-demo.test.ts`](../test/unit/sanitized-workflow-demo.test.ts); run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
+The published transcript is reproduced by the repository test `test/unit/sanitized-workflow-demo.test.ts`; run `npm test` after installing dependencies. Before running the integration test, provision `pre_provisioned_dml_fixture` in the isolated schema with an integer primary key named `id` and a non-null `label` column. The test removes its synthetic row even when a later operation fails. Never point it at production, shared, or sensitive data.
 
 The DDL integration test also changes schema: it creates a dedicated test table via `create_table`, creates a projection-only test view, seeds only that table through `insert_rows`, verifies it through MCP metadata, creates and verifies non-unique and unique indexes, exercises `drop_index` for the removable index and its protected-index rejections, verifies a duplicate-data rejection for the unique index, adds a nullable column, then drops the view before that table (and therefore its remaining indexes) during cleanup. It needs narrowly scoped actual `SELECT` on projected source columns, plus `CREATE`, `CREATE VIEW`, `INSERT`, `INDEX`, `ALTER`, and `DROP` on the isolated schema. It remains skipped unless all of these values are explicitly supplied:
 
@@ -201,7 +201,7 @@ The separate `create_schema` integration owner is skipped unless it receives a s
 
 The separate `drop_schema` integration owner is skipped unless `MYSQL_DDL_DROP_SCHEMA_INTEGRATION_TEST=true`, `MYSQL_DDL_DROP_SCHEMA_INTEGRATION_CONFIRM=isolated-schema-create-drop`, a dedicated `MYSQL_DDL_DROP_SCHEMA_INTEGRATION_SCHEMA` beginning with `mcp_ddl_test_`, and an exact allowlist containing only that disposable target are supplied with the normal DDL authorization. It creates one disposable schema, preflights and drops only that target, verifies absence, and is never part of ordinary validation. Do not enable it for `MYSQL_DATABASE` or a shared schema.
 
-The rename integration contract is a separate owner in [`test/integration/rename-table.integration.test.ts`](../test/integration/rename-table.integration.test.ts). It derives a source ending in `_rt` and a destination ending in `_rt_r` from `MYSQL_DDL_INTEGRATION_TABLE`, first verifies both names are absent, then creates, renames, describes, and cleans up only those names. It runs under the same opt-in and isolated-schema guard, and is included by `npm run test:integration`; never point either DDL fixture at shared or production data.
+The rename integration contract is maintained by the repository test `test/integration/rename-table.integration.test.ts`. It derives a source ending in `_rt` and a destination ending in `_rt_r` from `MYSQL_DDL_INTEGRATION_TABLE`, first verifies both names are absent, then creates, renames, describes, and cleans up only those names. It runs under the same opt-in and isolated-schema guard, and is included by `npm run test:integration`; never point either DDL fixture at shared or production data.
 
 ### Controlled foreign-key creation
 
