@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -137,8 +137,15 @@ async function main() {
 
     const installedPackageRoot = join(installDirectory, 'node_modules', 'mysql-mcp-server');
     const installedReadme = await readFile(join(installedPackageRoot, 'README.md'), 'utf8');
-    assert.match(installedReadme, /assets\/illustration\.png/u, 'The installed README must reference the packaged illustration.');
-    await access(join(installedPackageRoot, 'assets', 'illustration.png'));
+    assert.match(installedReadme, /\]\(assets\/illustration\.png\)/u, 'The installed README must link the packaged illustration exactly.');
+    const illustrationPath = join(installedPackageRoot, 'assets', 'illustration.png');
+    await access(illustrationPath);
+    assert.ok((await stat(illustrationPath)).isFile(), 'The packaged illustration must be a regular file.');
+    assert.deepEqual(
+      [...(await readFile(illustrationPath)).subarray(0, 8)],
+      [137, 80, 78, 71, 13, 10, 26, 10],
+      'The packaged illustration must have a PNG signature.',
+    );
     const template = await readFile(join(installedPackageRoot, '.env.example'), 'utf8');
     const environment = parseEnvironmentTemplate(template);
     assert.deepEqual(

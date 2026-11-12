@@ -31,7 +31,7 @@ The server never becomes a general SQL administration channel. Destructive opera
 3. The server exposes only the bounded tools enabled by configuration.
 4. MySQL enforces the configured account's privileges and object visibility.
 
-The recommended first session is discovery → table description → bounded `SELECT` → `EXPLAIN`. A [technical SVG architecture reference](docs/assets/architecture.svg) is available for documentation and packaging checks; the illustration above is the primary README visual.
+The recommended first session is discovery → table description → bounded `SELECT` → `EXPLAIN`. A [technical SVG architecture reference](docs/assets/architecture.svg) is available for readers who want a lower-level view of this flow; the illustration above is the primary README visual.
 
 ### Quick links
 
