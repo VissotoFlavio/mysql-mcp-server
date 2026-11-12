@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 1200 330">
+  <title id="title">Bounded local MySQL MCP architecture</title>
+  <desc id="desc">A developer asks an AI client, which launches a local MCP stdio server. The server exposes bounded tools to MySQL through a least-privilege account.</desc>
+  <style>
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 2; rx: 14; }
+    .accent { fill: #ddf4ff; stroke: #0969da; }
+    .safe { fill: #dafbe1; stroke: #1a7f37; }
+    text { font: 18px system-ui, sans-serif; fill: #24292f; }
+    .small { font-size: 15px; }
+    .arrow { stroke: #57606a; stroke-width: 3; marker-end: url(#arrow); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#57606a" />
+    </marker>
+  </defs>
+  <rect class="box" x="35" y="105" width="220" height="110" />
+  <text x="145" y="145" text-anchor="middle">Developer</text>
+  <text class="small" x="145" y="175" text-anchor="middle">natural-language prompt</text>
+  <rect class="accent" x="335" y="75" width="250" height="170" />
+  <text x="460" y="120" text-anchor="middle">AI client</text>
+  <text class="small" x="460" y="155" text-anchor="middle">MCP stdio process</text>
+  <text class="small" x="460" y="185" text-anchor="middle">local launch + reload</text>
+  <rect class="safe" x="665" y="55" width="270" height="210" />
+  <text x="800" y="105" text-anchor="middle">MySQL MCP Server</text>
+  <text class="small" x="800" y="140" text-anchor="middle">bounded tools</text>
+  <text class="small" x="800" y="168" text-anchor="middle">read-only by default</text>
+  <text class="small" x="800" y="196" text-anchor="middle">DML/DDL opt-in gates</text>
+  <text class="small" x="800" y="224" text-anchor="middle">sanitized errors/audit</text>
+  <rect class="box" x="1015" y="105" width="150" height="110" />
+  <text x="1090" y="145" text-anchor="middle">MySQL</text>
+  <text class="small" x="1090" y="175" text-anchor="middle">least-privilege</text>
+  <text class="small" x="1090" y="195" text-anchor="middle">account</text>
+  <line class="arrow" x1="255" y1="160" x2="335" y2="160" />
+  <line class="arrow" x1="585" y1="160" x2="665" y2="160" />
+  <line class="arrow" x1="935" y1="160" x2="1015" y2="160" />
+</svg>

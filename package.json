@@ -11,7 +11,12 @@
     "dist",
     ".env.example",
     "CHANGELOG.md",
-    "docs/sanitized-workflow-demo.md"
+    "docs/sanitized-workflow-demo.md",
+    "docs/getting-started.md",
+    "docs/clients/codex.md",
+    "docs/configuration.md",
+    "docs/troubleshooting.md",
+    "docs/assets/architecture.svg"
   ],
   "engines": {
     "node": ">=22"

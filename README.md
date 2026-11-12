@@ -1,35 +1,59 @@
 # MySQL MCP Server
 
-`mysql-mcp-server` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) server for bounded MySQL inspection and explicitly enabled database operations. It runs only as a local stdio process and does not expose an HTTP endpoint or listen on a network port.
+`mysql-mcp-server` connects an AI coding agent to MySQL through bounded, permission-aware tools. Explore schemas, inspect tables, and run limited read-only queries by default; enable structured data and schema changes explicitly when needed, without exposing an unrestricted SQL write interface.
+
+**Local stdio · Read-only by default · Opt-in changes · Experimental**
+
+It is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) process, not an HTTP API or graphical application. The configured MySQL account remains the authority for effective access: the server does not elevate privileges, grant permissions, or accept arbitrary SQL for writes.
 
 ## Project status
 
 **Experimental — available for controlled evaluation.** `mysql-mcp-server` is under active development and is appropriate for local testing with an isolated, masked, or otherwise non-sensitive database and a dedicated least-privilege account. It is not presented as production-ready; interfaces, operational guidance, and behavior may change before a stable release.
 
+## Why use it?
+
+An agent can discover the database context it is allowed to see instead of asking a developer to paste schemas into chat. The default surface is intentionally read-only and bounded:
+
+- **Read-only (default):** list accessible schemas and tables, describe table metadata, execute policy-approved `SELECT` statements with a literal `LIMIT` from 0 through 100, and inspect an `EXPLAIN` plan.
+- **DML (opt-in):** use structured `insert_rows`, `update_rows`, and `delete_rows` tools only when `MYSQL_DML_ENABLED=true` and the MySQL account has the required privileges.
+- **DDL (opt-in plus operation-specific gates):** use the explicitly supported structured schema, table, view, index, column, constraint, and rename tools only when the relevant flags and confirmations are present.
+
+The server never becomes a general SQL administration channel. DML/DDL are disabled by default, destructive operations have additional gates, errors and audit output are sanitized, and uncertain mutations are not retried automatically.
+
+![Bounded local MCP architecture](docs/assets/architecture.svg)
+
+**What this diagram shows:** a developer asks an AI client a natural-language question; the client launches this local stdio server; the server exposes only the enabled bounded tools; MySQL enforces the dedicated account's effective permissions. The default first session is discovery → table description → bounded `SELECT` → `EXPLAIN`.
+
+### Quick links
+
+[Getting started](docs/getting-started.md) · [Codex client setup](docs/clients/codex.md) · [Configuration](docs/configuration.md) · [Tool reference](#tool-contract) · [Troubleshooting](docs/troubleshooting.md) · [Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases)
+
 ## Quick start: use an official package
+
+For the complete download-to-first-prompt flow, including Windows PowerShell and Codex, see [Getting started](docs/getting-started.md). The commands below remain the shortest package-based path. The project is `private` and does not claim npm distribution; use a stable asset from the [GitHub Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases) page.
 
 This is the shortest path for a user who does not have a repository clone. Download the `.tgz` asset from an official GitHub Release, choose a dedicated local install directory, and install the package with its production dependencies. Candidate packages from prereleases are for controlled validation only.
 
 Before starting, have Node.js 22 or later, npm, a reachable MySQL server, a dedicated least-privilege account, and an MCP client that can launch a local stdio process. Keep credentials and TLS material in the launching environment or a local untracked file.
 
 ```bash
-npm install --omit=dev --prefix /absolute/path/to/mysql-mcp-server /absolute/path/to/downloads/mysql-mcp-server-<version>.tgz
+npm install --omit=dev --prefix "/absolute/path/to/mysql-mcp-server" "/absolute/path/to/downloads/mysql-mcp-server-<version>.tgz"
 ```
 
 Copy the packaged blank-variable template to a local, untracked file. Edit that file on the machine that will launch the server; do not put credentials or TLS material in the MCP client's JSON configuration.
 
 ```bash
-cp /absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/.env.example /absolute/path/to/mysql-mcp-server/.env
+cp "/absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/.env.example" "/absolute/path/to/mysql-mcp-server/.env"
 # edit /absolute/path/to/mysql-mcp-server/.env
-node --env-file=/absolute/path/to/mysql-mcp-server/.env /absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/dist/server.js
+node --env-file="/absolute/path/to/mysql-mcp-server/.env" "/absolute/path/to/mysql-mcp-server/node_modules/mysql-mcp-server/dist/server.js"
 ```
 
 On PowerShell, use `Copy-Item` for the copy step:
 
 ```powershell
-npm install --omit=dev --prefix C:\path\to\mysql-mcp-server C:\path\to\downloads\mysql-mcp-server-<version>.tgz
-Copy-Item C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\.env.example C:\path\to\mysql-mcp-server\.env
-node --env-file=C:\path\to\mysql-mcp-server\.env C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\dist\server.js
+npm install --omit=dev --prefix 'C:\path\to\mysql-mcp-server' 'C:\path\to\downloads\mysql-mcp-server-<version>.tgz'
+Copy-Item 'C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\.env.example' 'C:\path\to\mysql-mcp-server\.env'
+node --env-file='C:\path\to\mysql-mcp-server\.env' 'C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\dist\server.js'
 ```
 
 The installed executable is `.../node_modules/.bin/mysql-mcp-server` (`mysql-mcp-server.cmd` on Windows). Use that path when the MCP client can inject environment variables itself. When using a local `.env` file, invoke `node` as above so `--env-file` is processed before the server script.
