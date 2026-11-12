@@ -1,14 +1,6 @@
 # MySQL MCP Server
 
-`mysql-mcp-server` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) server for safe, bounded, read-only access to MySQL metadata, queries, and query plans, with opt-in controlled `INSERT`, `UPDATE`, `DELETE`, strict `CREATE SCHEMA`, structured `CREATE TABLE`, projection-only `CREATE SQL SECURITY INVOKER VIEW`, explicit `DROP VIEW`, non-unique and unique structured `CREATE INDEX`, named secondary-index `DROP INDEX`, nullable `ALTER TABLE ADD COLUMN`, controlled `ALTER TABLE ADD FOREIGN KEY`, widening-only `ALTER TABLE MODIFY COLUMN`, one-column `ALTER TABLE RENAME COLUMN`, same-schema `RENAME TABLE`, controlled `DROP SCHEMA`, and explicitly confirmed `TRUNCATE TABLE` capabilities. It runs only as a local stdio process: it does not expose an HTTP endpoint or listen on a network port.
-
-Use it with one dedicated MySQL account that has only the minimum permissions required for the enabled capabilities. When `MYSQL_DML_ENABLED=true`, that account must also have the intended DML privileges on the target objects. When `MYSQL_DDL_ENABLED=true`, it must additionally have narrowly scoped `SELECT` for metadata and duplicate preflight plus only the intended `CREATE`, `INDEX`, and `ALTER` privileges, `DROP` on a rename source or explicitly confirmed view, `INSERT` on a rename destination, and (for foreign keys) `REFERENCES` privileges in the isolated target schema. The controlled view workflow needs `CREATE VIEW` on the target schema plus actual source-column `SELECT`; its generated view always uses `SQL SECURITY INVOKER` and never accepts a definer. The server neither grants nor elevates database permissions and does not require a separate DML or DDL credential; `drop_schema` is the exception that also requires its explicit local allowlist.
-
-For `create_view`, the required privilege is not metadata access alone: grant `CREATE VIEW` in the target schema and narrowly scoped actual `SELECT` on every projected source table/column. The view is always `SQL SECURITY INVOKER`; no client-supplied definer is accepted.
-
-For `create_schema`, enable `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true` only alongside `MYSQL_DDL_ENABLED=true`, use a dedicated account with metadata visibility and the `CREATE` privilege that covers the target database (depending on the server's grant setup, this may require a global or database-level grant), and explicitly verify the intended target and cleanup plan. Do not grant `CREATE USER`, `GRANT OPTION`, or broader administrative privileges. The tool never changes `MYSQL_DATABASE`, grants privileges, or retries an uncertain submission.
-
-For `drop_schema`, enable `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` only alongside `MYSQL_DDL_ENABLED=true` and provide `MYSQL_DDL_DROP_SCHEMA_ALLOWLIST` as an exact comma-separated list of disposable schema identifiers. The allowlist must be non-empty for registration, must never contain `MYSQL_DATABASE` or a protected system schema, and does not replace MySQL authorization. The operation is supported only for a schema with at least one visible InnoDB base table exposing a durable `TABLE_ID`; empty or no-anchor schemas fail closed. The account needs only the metadata visibility and `DROP` privilege required for the explicitly approved lifecycle; take and verify backups, schedule a controlled maintenance window, and confirm recovery before proceeding. The impact snapshot is not a cross-session lock: concurrent external DDL can make it stale, so verify the target after the operation.
+`mysql-mcp-server` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) server for bounded MySQL inspection and explicitly enabled database operations. It runs only as a local stdio process and does not expose an HTTP endpoint or listen on a network port.
 
 ## Project status
 
@@ -17,6 +9,8 @@ For `drop_schema`, enable `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` only alongside `M
 ## Quick start: use an official package
 
 This is the shortest path for a user who does not have a repository clone. Download the `.tgz` asset from an official GitHub Release, choose a dedicated local install directory, and install the package with its production dependencies. Candidate packages from prereleases are for controlled validation only.
+
+Before starting, have Node.js 22 or later, npm, a reachable MySQL server, a dedicated least-privilege account, and an MCP client that can launch a local stdio process. Keep credentials and TLS material in the launching environment or a local untracked file.
 
 ```bash
 npm install --omit=dev --prefix /absolute/path/to/mysql-mcp-server /absolute/path/to/downloads/mysql-mcp-server-<version>.tgz
@@ -69,6 +63,8 @@ args = [
 
 Adapt the property names to the selected MCP client. This example contains no credentials. Prefer the client's secret or environment injection mechanism when available, then omit `--env-file` and pass only the required `MYSQL_*` values to the child process. The child process uses stdio: its stdout is reserved for MCP protocol messages, so do not add banners, `console.log` output, or a wrapper that writes status text there; operational logs belong on stderr.
 
+After adding or changing the server entry, restart or reload the MCP client before starting the first session.
+
 ### First safe MCP session
 
 With `MYSQL_DML_ENABLED=false` and `MYSQL_DDL_ENABLED=false`, start by discovering only what the account can see:
@@ -93,6 +89,16 @@ The default session registers only these bounded read-only tools. Capabilities a
 | DDL plus `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` and a non-empty `MYSQL_DDL_DROP_SCHEMA_ALLOWLIST`        | `drop_schema`                                                                                                                                                                                                                                         | Disposable-schema allowlist, explicit confirmation, backup/recovery review, and no automatic retry. |
 
 Every write or schema change still depends on the configured MySQL account's effective permissions and requires the documented operator confirmation. Leave DML and DDL disabled until the workflow, target, privileges, and recovery plan are explicit.
+
+## Security and privilege reference
+
+Use one dedicated MySQL account with only the minimum permissions required for the enabled capabilities. When `MYSQL_DML_ENABLED=true`, that account must also have the intended DML privileges on the target objects. When `MYSQL_DDL_ENABLED=true`, it must additionally have narrowly scoped `SELECT` for metadata and duplicate preflight plus only the intended `CREATE`, `INDEX`, and `ALTER` privileges, `DROP` on a rename source or explicitly confirmed view, `INSERT` on a rename destination, and (for foreign keys) `REFERENCES` privileges in the isolated target schema. The controlled view workflow needs `CREATE VIEW` on the target schema plus actual source-column `SELECT`; its generated view always uses `SQL SECURITY INVOKER` and never accepts a definer. The server neither grants nor elevates database permissions and does not require a separate DML or DDL credential; `drop_schema` is the exception that also requires its explicit local allowlist.
+
+For `create_view`, the required privilege is not metadata access alone: grant `CREATE VIEW` in the target schema and narrowly scoped actual `SELECT` on every projected source table/column. The view is always `SQL SECURITY INVOKER`; no client-supplied definer is accepted.
+
+For `create_schema`, enable `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true` only alongside `MYSQL_DDL_ENABLED=true`, use a dedicated account with metadata visibility and the `CREATE` privilege that covers the target database (depending on the server's grant setup, this may require a global or database-level grant), and explicitly verify the intended target and cleanup plan. Do not grant `CREATE USER`, `GRANT OPTION`, or broader administrative privileges. The tool never changes `MYSQL_DATABASE`, grants privileges, or retries an uncertain submission.
+
+For `drop_schema`, enable `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` only alongside `MYSQL_DDL_ENABLED=true` and provide `MYSQL_DDL_DROP_SCHEMA_ALLOWLIST` as an exact comma-separated list of disposable schema identifiers. The allowlist must be non-empty for registration, must never contain `MYSQL_DATABASE` or a protected system schema, and does not replace MySQL authorization. The operation is supported only for a schema with at least one visible InnoDB base table exposing a durable `TABLE_ID`; empty or no-anchor schemas fail closed. The account needs only the metadata visibility and `DROP` privilege required for the explicitly approved lifecycle; take and verify backups, schedule a controlled maintenance window, and confirm recovery before proceeding. The impact snapshot is not a cross-session lock: concurrent external DDL can make it stale, so verify the target after the operation.
 
 ## Why this exists
 
@@ -143,13 +149,6 @@ The server provides only documented controlled DDL tools when DDL is enabled; it
 ## Sanitized workflow demo
 
 The [sanitized MCP workflow transcript](docs/sanitized-workflow-demo.md) shows metadata discovery, object description, a bounded query and plan inspection, followed by an operator-reviewed insert, update, delete, and result-handling guidance. It is backed by a reproducible in-memory MCP test that uses only synthetic data; no database connection, credential, hostname, certificate, internal identifier, or production query result is present.
-
-## What you need
-
-- Node.js 22 or later and npm.
-- A reachable MySQL server and an account with the intended least-privilege access. The account's effective permissions determine the schemas, tables, views, and (when enabled) target inserts available to the tools.
-- An MCP client that can launch a local stdio process. Consult that client's documentation for its configuration file and syntax; this project does not prescribe a particular client or vendor.
-- A secure way to supply process environment variables. Do not put credentials, connection strings, or TLS material in source control, chat transcripts, or a client configuration file.
 
 ## Install from source, build, and start
 
