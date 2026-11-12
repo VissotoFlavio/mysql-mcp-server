@@ -1,10 +1,10 @@
 # MySQL MCP Server
 
-`mysql-mcp-server` connects an AI coding agent to MySQL through bounded, permission-aware tools. Explore schemas, inspect tables, and run limited read-only queries by default; enable structured data and schema changes explicitly when needed, without exposing an unrestricted SQL write interface.
+![MySQL MCP Server architecture showing AI agents connecting to MySQL through controlled MCP tools](assets/illustration.png)
+
+Connect AI coding agents to MySQL through bounded, permission-aware MCP tools. Explore schemas, inspect tables, and run limited read-only queries by default; enable structured data and schema changes explicitly when needed, without exposing an unrestricted SQL write interface.
 
 **Local stdio · Read-only by default · Opt-in changes · Experimental**
-
-It is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) process, not an HTTP API or graphical application. The configured MySQL account remains the authority for effective access: the server does not elevate privileges, grant permissions, or accept arbitrary SQL for writes.
 
 ## Project status
 
@@ -12,23 +12,32 @@ It is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) 
 
 ## Why use it?
 
-An agent can discover the database context it is allowed to see instead of asking a developer to paste schemas into chat. The default surface is intentionally read-only and bounded:
+An agent can discover the database context it is allowed to see instead of asking a developer to paste schemas into chat. The server is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.org/) process, not an HTTP API or graphical application. MySQL remains the authority for effective access: the server does not elevate privileges, grant permissions, or accept arbitrary SQL for writes.
 
-- **Read-only (default):** list accessible schemas and tables, describe table metadata, execute policy-approved `SELECT` statements with a literal `LIMIT` from 0 through 100, and inspect an `EXPLAIN` plan.
-- **DML (opt-in):** use structured `insert_rows`, `update_rows`, and `delete_rows` tools only when `MYSQL_DML_ENABLED=true` and the MySQL account has the required privileges.
-- **DDL (opt-in plus operation-specific gates):** use the explicitly supported structured schema, table, view, index, column, constraint, and rename tools only when the relevant flags and confirmations are present.
+## Capabilities
 
-The server never becomes a general SQL administration channel. DML/DDL are disabled by default, destructive operations have additional gates, errors and audit output are sanitized, and uncertain mutations are not retried automatically.
+| Capability    | Default  | What it provides                                                                                                           | Boundary                                                                                                              |
+| ------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Read-only** | Enabled  | Discover accessible schemas and tables, inspect table metadata, run bounded `SELECT` queries, and inspect `EXPLAIN` plans. | Literal `LIMIT` from 0 through 100, bound parameters, and the MySQL account's effective permissions.                  |
+| **DML**       | Disabled | Structured `insert_rows`, `update_rows`, and `delete_rows` operations.                                                     | Requires `MYSQL_DML_ENABLED=true`, appropriate MySQL grants, direct operator confirmation, and no automatic retry.    |
+| **DDL**       | Disabled | Structured schema, table, view, index, column, constraint, and rename operations.                                          | Requires `MYSQL_DDL_ENABLED=true` plus operation-specific flags, metadata checks, and confirmations where applicable. |
 
-![Bounded local MCP architecture](docs/assets/architecture.svg)
+The server never becomes a general SQL administration channel. Destructive operations have additional gates, errors and audit output are sanitized, and uncertain mutations are not retried automatically. See the [complete tool contract](#tool-contract) and [runtime configuration reference](docs/configuration.md) for details.
 
-**What this diagram shows:** a developer asks an AI client a natural-language question; the client launches this local stdio server; the server exposes only the enabled bounded tools; MySQL enforces the dedicated account's effective permissions. The default first session is discovery → table description → bounded `SELECT` → `EXPLAIN`.
+## How it works
+
+1. A developer asks an AI client a natural-language question.
+2. The client launches this local MCP server over stdio.
+3. The server exposes only the bounded tools enabled by configuration.
+4. MySQL enforces the configured account's privileges and object visibility.
+
+The recommended first session is discovery → table description → bounded `SELECT` → `EXPLAIN`. A [technical SVG architecture reference](docs/assets/architecture.svg) is available for documentation and packaging checks; the illustration above is the primary README visual.
 
 ### Quick links
 
-[Getting started](docs/getting-started.md) · [Codex client setup](docs/clients/codex.md) · [Configuration](docs/configuration.md) · [Tool reference](#tool-contract) · [Troubleshooting](docs/troubleshooting.md) · [Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases)
+[Quick start](#quick-start-install-an-official-package) · [First example](#first-example) · [Security and limitations](#security-and-limitations) · [Getting started](docs/getting-started.md) · [Codex client setup](docs/clients/codex.md) · [Configuration](docs/configuration.md) · [Tool reference](#tool-contract) · [Troubleshooting](docs/troubleshooting.md) · [Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases)
 
-## Quick start: use an official package
+## Quick start: install an official package
 
 For the complete download-to-first-prompt flow, including Windows PowerShell and Codex, see [Getting started](docs/getting-started.md). The commands below remain the shortest package-based path. The npm package has `private: true` in `package.json` and is not published to npm; use a stable asset from the [GitHub Releases](https://github.com/VissotoFlavio/mysql-mcp-server/releases) page.
 
@@ -36,9 +45,13 @@ This is the shortest path for a user who does not have a repository clone. Downl
 
 Before starting, have Node.js 22 or later, npm, a reachable MySQL server, a dedicated least-privilege account, and an MCP client that can launch a local stdio process. Keep credentials and TLS material in the launching environment or a local untracked file.
 
+### 1. Install the release package
+
 ```bash
 npm install --omit=dev --prefix "/absolute/path/to/mysql-mcp-server" "/absolute/path/to/downloads/mysql-mcp-server-<version>.tgz"
 ```
+
+### 2. Configure the minimum safe environment
 
 Copy the packaged blank-variable template to a local, untracked file. Edit that file on the machine that will launch the server; do not put credentials or TLS material in the MCP client's JSON configuration.
 
@@ -55,6 +68,8 @@ npm install --omit=dev --prefix 'C:\path\to\mysql-mcp-server' 'C:\path\to\downlo
 Copy-Item 'C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\.env.example' 'C:\path\to\mysql-mcp-server\.env'
 node --env-file='C:\path\to\mysql-mcp-server\.env' 'C:\path\to\mysql-mcp-server\node_modules\mysql-mcp-server\dist\server.js'
 ```
+
+### 3. Register the local MCP process
 
 The installed executable is `.../node_modules/.bin/mysql-mcp-server` (`mysql-mcp-server.cmd` on Windows). Use that path when the MCP client can inject environment variables itself. When using a local `.env` file, invoke `node` as above so `--env-file` is processed before the server script.
 
@@ -89,7 +104,7 @@ Adapt the property names to the selected MCP client. This example contains no cr
 
 After adding or changing the server entry, restart or reload the MCP client before starting the first session.
 
-### First safe MCP session
+### 4. Start the first safe session
 
 With `MYSQL_DML_ENABLED=false` and `MYSQL_DDL_ENABLED=false`, start by discovering only what the account can see:
 
@@ -99,22 +114,29 @@ With `MYSQL_DML_ENABLED=false` and `MYSQL_DDL_ENABLED=false`, start by discoveri
 4. Call `execute_read_only_query` with one policy-approved `SELECT`, bound `parameters`, and a literal `LIMIT` from 0 through 100.
 5. Call `explain_read_only_query` with the same approved query and parameters; do not prepend `EXPLAIN`.
 
-The default session registers only these bounded read-only tools. Capabilities are added only by explicit configuration:
+The default session registers only the five bounded read-only tools. Leave DML and DDL disabled until the workflow, target, privileges, and recovery plan are explicit.
 
-| Opt-in                                                                                                 | Additional tools or capability                                                                                                                                                                                                                        | Boundary                                                                                            |
-| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `MYSQL_DML_ENABLED=true`                                                                               | `insert_rows`, `update_rows`, `delete_rows`                                                                                                                                                                                                           | Dedicated DML tools, bounded requests, direct operator confirmation, and no automatic retry.        |
-| `MYSQL_DDL_ENABLED=true`                                                                               | `create_table`, `create_view`, `create_index`, `create_unique_index`, `drop_index`, `alter_table_add_column`, `alter_table_add_foreign_key`, `alter_table_drop_foreign_key`, `alter_table_modify_column`, `alter_table_rename_column`, `rename_table` | Structured, bounded DDL only; no arbitrary SQL, grants, migrations, or credential changes.          |
-| DDL plus `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true`                                                        | `create_schema`                                                                                                                                                                                                                                       | Separate schema-creation opt-in and least-privilege `CREATE` access.                                |
-| DDL plus `MYSQL_DDL_DROP_VIEW_METADATA_COMPLETE=true`                                                  | `drop_view`                                                                                                                                                                                                                                           | Requires an explicit completeness attestation and exact confirmation.                               |
-| DDL plus `MYSQL_DDL_DROP_COLUMN_ENABLED=true` and `MYSQL_DDL_DROP_COLUMN_METADATA_COMPLETE=true`       | `alter_table_drop_column`                                                                                                                                                                                                                             | Separate destructive opt-in and fail-closed dependency metadata.                                    |
-| DDL plus `MYSQL_DDL_DROP_TABLE_ENABLED=true` and `MYSQL_DDL_DROP_TABLE_METADATA_COMPLETE=true`         | `drop_table`                                                                                                                                                                                                                                          | Separate destructive opt-in, target-bound confirmation, and dependency preflight.                   |
-| DDL plus `MYSQL_DDL_TRUNCATE_TABLE_ENABLED=true` and `MYSQL_DDL_TRUNCATE_TABLE_METADATA_COMPLETE=true` | `truncate_table`                                                                                                                                                                                                                                      | Separate destructive opt-in, target-bound confirmation, and foreign-key preflight.                  |
-| DDL plus `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` and a non-empty `MYSQL_DDL_DROP_SCHEMA_ALLOWLIST`        | `drop_schema`                                                                                                                                                                                                                                         | Disposable-schema allowlist, explicit confirmation, backup/recovery review, and no automatic retry. |
+## First example
 
-Every write or schema change still depends on the configured MySQL account's effective permissions and requires the documented operator confirmation. Leave DML and DDL disabled until the workflow, target, privileges, and recovery plan are explicit.
+These prompts are intentionally independent of any particular schema or table:
 
-## Security and privilege reference
+1. **Schema discovery:** “List the MySQL schemas and tables accessible to my account.”
+2. **Table inspection:** “Choose an accessible table and describe its columns and keys.”
+3. **Read-only query:** “Based on the discovered table structure, propose a bounded `SELECT` using existing columns and a literal `LIMIT 5`.”
+4. **Query analysis:** “Explain the execution plan for the approved read-only query; do not execute DML.”
+
+If discovery returns no suitable table or columns, stop at metadata. Any example object names elsewhere in this README are illustrative; use only objects visible to the configured account.
+
+## Documentation
+
+- [Getting started](docs/getting-started.md): complete release-package onboarding for POSIX shells, PowerShell, and Codex.
+- [Codex client setup](docs/clients/codex.md): client-specific stdio registration.
+- [Runtime configuration](docs/configuration.md): variable types, defaults, and opt-in boundaries.
+- [Tool contract](#tool-contract): detailed read-only, DML, and DDL behavior.
+- [Sanitized workflow demo](docs/sanitized-workflow-demo.md): synthetic discovery, query, and operator-reviewed write transcript.
+- [Troubleshooting](docs/troubleshooting.md): symptom-based startup, configuration, and client guidance.
+
+## Security and limitations
 
 Use one dedicated MySQL account with only the minimum permissions required for the enabled capabilities. When `MYSQL_DML_ENABLED=true`, that account must also have the intended DML privileges on the target objects. When `MYSQL_DDL_ENABLED=true`, it must additionally have narrowly scoped `SELECT` for metadata and duplicate preflight plus only the intended `CREATE`, `INDEX`, and `ALTER` privileges, `DROP` on a rename source or explicitly confirmed view, `INSERT` on a rename destination, and (for foreign keys) `REFERENCES` privileges in the isolated target schema. The controlled view workflow needs `CREATE VIEW` on the target schema plus actual source-column `SELECT`; its generated view always uses `SQL SECURITY INVOKER` and never accepts a definer. The server neither grants nor elevates database permissions and does not require a separate DML or DDL credential; `drop_schema` is the exception that also requires its explicit local allowlist.
 
@@ -124,15 +146,9 @@ For `create_schema`, enable `MYSQL_DDL_CREATE_SCHEMA_ENABLED=true` only alongsid
 
 For `drop_schema`, enable `MYSQL_DDL_DROP_SCHEMA_ENABLED=true` only alongside `MYSQL_DDL_ENABLED=true` and provide `MYSQL_DDL_DROP_SCHEMA_ALLOWLIST` as an exact comma-separated list of disposable schema identifiers. The allowlist must be non-empty for registration, must never contain `MYSQL_DATABASE` or a protected system schema, and does not replace MySQL authorization. The operation is supported only for a schema with at least one visible InnoDB base table exposing a durable `TABLE_ID`; empty or no-anchor schemas fail closed. The account needs only the metadata visibility and `DROP` privilege required for the explicitly approved lifecycle; take and verify backups, schedule a controlled maintenance window, and confirm recovery before proceeding. The impact snapshot is not a cross-session lock: concurrent external DDL can make it stale, so verify the target after the operation.
 
-## Why this exists
-
-When a developer is investigating a legacy or unfamiliar MySQL database, an AI agent needs accurate context before it can help. Manually copying schema details into a conversation is slow, becomes stale, and can expose more information than necessary.
-
-This server lets a locally connected agent inspect metadata visible to its configured account, run one bounded read-only query at a time, request an `EXPLAIN` plan for that query, and optionally perform controlled bounded DML. The agent can build context from permitted tool results instead of a manually maintained database dump. It does not infer relationships that the available schemas, tables, column metadata, query results, or plans do not expose.
-
 ## Use cases
 
-Use the registered tools to turn focused natural-language questions into a read-only exploration workflow:
+Use the registered tools to turn focused natural-language questions into a bounded workflow:
 
 | Developer prompt                                                            | Tool                      | Example request                                                                                                                                 |
 | --------------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |

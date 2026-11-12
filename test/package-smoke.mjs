@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -136,6 +136,9 @@ async function main() {
     });
 
     const installedPackageRoot = join(installDirectory, 'node_modules', 'mysql-mcp-server');
+    const installedReadme = await readFile(join(installedPackageRoot, 'README.md'), 'utf8');
+    assert.match(installedReadme, /assets\/illustration\.png/u, 'The installed README must reference the packaged illustration.');
+    await access(join(installedPackageRoot, 'assets', 'illustration.png'));
     const template = await readFile(join(installedPackageRoot, '.env.example'), 'utf8');
     const environment = parseEnvironmentTemplate(template);
     assert.deepEqual(

@@ -16,7 +16,8 @@
     "docs/clients/codex.md",
     "docs/configuration.md",
     "docs/troubleshooting.md",
-    "docs/assets/architecture.svg"
+    "docs/assets/architecture.svg",
+    "assets/illustration.png"
   ],
   "engines": {
     "node": ">=22"
