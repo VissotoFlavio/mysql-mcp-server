@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { ConfigurationError, DEFAULTS, loadConnectionConfig } from '../../src/config.js';
@@ -24,6 +25,52 @@ test('loads a bounded configuration with conservative defaults', () => {
   assert.equal(config.dropColumnMetadataComplete, false);
   assert.equal(config.dropTableEnabled, false);
   assert.equal(config.dropTableMetadataComplete, false);
+  assert.equal(config.tls, undefined);
+});
+
+test('distinguishes absent optional values from present empty values', () => {
+  const minimal = validEnvironment();
+
+  assert.equal(loadConnectionConfig(minimal).port, DEFAULTS.port);
+  assert.throws(() => loadConnectionConfig({ ...minimal, MYSQL_PORT: '' }), /MYSQL_PORT must not be empty when provided/);
+  assert.throws(() => loadConnectionConfig({ ...minimal, MYSQL_TLS: '' }), /MYSQL_TLS must not be empty when provided/);
+  assert.throws(
+    () => loadConnectionConfig({ ...minimal, MYSQL_DDL_DROP_SCHEMA_ALLOWLIST: '' }),
+    /MYSQL_DDL_DROP_SCHEMA_ALLOWLIST must be a comma-separated list/,
+  );
+});
+
+test('published .env.example is valid after filling only required connection values', () => {
+  const template = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8');
+  const environment: Record<string, string> = {};
+
+  for (const line of template.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue;
+
+    const separator = trimmed.indexOf('=');
+    assert.notEqual(separator, -1, `expected an environment assignment: ${line}`);
+    environment[trimmed.slice(0, separator)] = trimmed.slice(separator + 1);
+  }
+
+  assert.deepEqual(
+    Object.entries(environment)
+      .filter(([, value]) => value.length === 0)
+      .map(([name]) => name),
+    ['MYSQL_HOST', 'MYSQL_DATABASE', 'MYSQL_USER', 'MYSQL_PASSWORD'],
+  );
+
+  const config = loadConnectionConfig({
+    ...environment,
+    MYSQL_HOST: 'mysql.example.test',
+    MYSQL_DATABASE: 'demo_catalog',
+    MYSQL_USER: 'mcp_reader',
+    MYSQL_PASSWORD: 'synthetic-password',
+  });
+
+  assert.equal(config.port, DEFAULTS.port);
+  assert.equal(config.dmlEnabled, false);
+  assert.equal(config.ddlEnabled, false);
   assert.equal(config.tls, undefined);
 });
 

@@ -11,7 +11,13 @@
     "dist",
     ".env.example",
     "CHANGELOG.md",
-    "docs/sanitized-workflow-demo.md"
+    "docs/sanitized-workflow-demo.md",
+    "docs/getting-started.md",
+    "docs/clients/codex.md",
+    "docs/configuration.md",
+    "docs/troubleshooting.md",
+    "docs/assets/architecture.svg",
+    "assets/illustration.png"
   ],
   "engines": {
     "node": ">=22"
@@ -26,7 +32,8 @@
     "prepack": "npm run build",
     "start": "node dist/server.js",
     "test": "tsx --test \"test/unit/**/*.test.ts\"",
-    "test:integration": "node -e \"if (process.env.MYSQL_INTEGRATION_TEST !== 'true') throw new Error('Set MYSQL_INTEGRATION_TEST=true to run integration tests.');\" && tsx --test \"test/integration/**/*.test.ts\""
+    "test:integration": "node -e \"if (process.env.MYSQL_INTEGRATION_TEST !== 'true') throw new Error('Set MYSQL_INTEGRATION_TEST=true to run integration tests.');\" && tsx --test \"test/integration/**/*.test.ts\"",
+    "test:package-smoke": "node test/package-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",

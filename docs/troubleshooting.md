@@ -1,0 +1,19 @@
+# Troubleshooting
+
+[Back to README](../README.md) · [Getting started](getting-started.md)
+
+Use absolute paths and inspect only sanitized error messages. Do not print `.env`, credentials, connection strings, TLS contents, or raw database errors.
+
+| Symptom                                          | Check                                                                                            | Safe action                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Invalid MySQL configuration`                    | Required values, `KEY=` optional lines, exact `true`/`false` spelling, and `--env-file` path     | Copy the packaged `.env.example`, fill only the four required values, and leave unused optional lines commented out.                                   |
+| `MCP server not found` or process does not start | Node is 22+, the release package contains `dist/server.js`, and the client uses absolute paths   | Restart/reload the client and use `node --env-file=... .../dist/server.js`; do not assume an HTTP server exists.                                       |
+| Terminal appears silent                          | stdout is the MCP transport                                                                      | This is expected. Logs belong on stderr; verify the server from the client's tool list.                                                                |
+| Connection refused or timeout                    | Host, port, firewall, network route, and whether the server requires TLS                         | Check connectivity with the database operator and set `MYSQL_TLS=true` with readable certificate files when required. Never disable peer verification. |
+| Access denied                                    | Effective grants of the configured MySQL account                                                 | Request the minimum missing grant for the isolated target; do not switch to root or ask the agent to grant privileges.                                 |
+| DML/DDL tool is missing                          | The corresponding opt-in is disabled or the process was not restarted                            | Confirm the intended flag and restart the MCP client. Tool presence still does not bypass MySQL authorization.                                         |
+| Read-only query is rejected                      | Missing literal `LIMIT`, limit outside 0–100, unsupported SQL, or unbound values                 | Use one policy-approved `SELECT`/read-only CTE with bound `parameters` and a literal limit.                                                            |
+| TLS configuration rejected                       | `MYSQL_TLS` is false while certificate paths are set, or peer verification is not exactly `true` | Enable TLS when needed and keep verification enabled.                                                                                                  |
+| Write returns an unknown outcome                 | Transport/database state is indeterminate                                                        | Do not retry automatically. Verify the target with a bounded read-only query and obtain a new operator decision.                                       |
+
+For package, client, and first-prompt checks, return to [Getting started](getting-started.md). For the complete structured tool contracts and safety boundaries, use the [Tool contract](../README.md#tool-contract) and [sanitized workflow](sanitized-workflow-demo.md).

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [#192 — docs: improve onboarding and safe first use](https://github.com/VissotoFlavio/mysql-mcp-server/issues/192): make `.env.example` copyable after filling only required connection values, add template and installed-package smoke coverage, improve the README landing page and first-use prompts, package the onboarding illustration, clarify the read-only/opt-in boundary, and add package onboarding, Codex, configuration, and troubleshooting guidance.
+
 ## 0.19.1 - 2026-11-11
 
 - [#188 — docs: tornar instalação do pacote e configuração MCP acessíveis](https://github.com/VissotoFlavio/mysql-mcp-server/issues/188): organiza o quick start para instalação sem clone, configuração local não versionada, uso inicial via MCP, capacidades por opt-in e documentação sanitizada incluída no pacote.
