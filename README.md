@@ -350,6 +350,11 @@ Operate it with the following safeguards:
 - Audit and monitor the account and database activity.
 - Configure a practical `MYSQL_QUERY_TIMEOUT_MS` for the environment and still review query shape before running it.
 
+## Agent guidance
+
+Versioned repository policy, scoped guidance and development skills are
+documented in [docs/agent-guidance.md](docs/agent-guidance.md).
+
 ## Validation
 
 Run the local checks that do not require a database or credentials:
